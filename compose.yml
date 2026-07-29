@@ -1,0 +1,16 @@
+services:
+  gh-pr-api:
+    image: ghcr.io/ivuorinen/gh-pr-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      GitHub__Owner: "ivuorinen"
+      GitHub__Token: "${GITHUB_TOKEN}"
+      GitHub__CacheTtlSeconds: "300"
+      GitHub__RepositoryLimit: "1000"
+      GitHub__PullRequestLimitPerRepository: "100"
+      GitHub__StatusCheckLimitPerPullRequest: "100"

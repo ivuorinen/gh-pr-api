@@ -1,0 +1,10 @@
+<Project>
+  <!-- A nested Directory.Build.props shadows the parent by default; chain-import it explicitly
+       so tests/ still inherits Nullable/ImplicitUsings/analyzer settings from the root. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!-- CA1707 (no underscores) is scoped to tests only; src/ keeps it enforced. -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/GhPrApi/GhPrApi.csproj" />
+  <Project Path="tests/GhPrApi.Tests/GhPrApi.Tests.csproj" />
+</Solution>
