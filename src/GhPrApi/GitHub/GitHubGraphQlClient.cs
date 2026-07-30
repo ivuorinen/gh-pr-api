@@ -11,6 +11,15 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
 {
     private const int MaxLoggedErrorBodyLength = 500;
 
+    // GitHub's GraphQL API statically rejects queries whose nested "first" values multiply out
+    // past 500,000 possible nodes -- but in practice, GitHub's backend times out executing a
+    // query well before that static ceiling (observed: a consistent ~10.5s-then-502 at 210,100
+    // nodes, across every retry attempt, meaning it wasn't transient). Keeping this page size
+    // small keeps each individual request cheap to execute; RepositoryLimit still controls the
+    // total repos scanned, just spread across more, smaller requests via the existing cursor
+    // pagination loop instead of fewer, heavier ones.
+    private const int MaxRepositoryPageSize = 10;
+
     private const string OpenPullRequestsQuery = """
         query OpenPullRequests($owner: String!, $repoCursor: String, $repoPageSize: Int!, $prLimit: Int!) {
           repositoryOwner(login: $owner) {
@@ -55,7 +64,7 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
                       login
                       __typename
                     }
-                    labels(first: 50) {
+                    labels(first: 20) {
                       nodes {
                         name
                       }
@@ -133,7 +142,7 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
         EnsureTokenConfigured();
 
         var configuredOptions = _options.CurrentValue;
-        var repoPageSize = Math.Min(100, configuredOptions.RepositoryLimit);
+        var repoPageSize = Math.Min(MaxRepositoryPageSize, configuredOptions.RepositoryLimit);
         var repositoryLimit = configuredOptions.RepositoryLimit;
         var prLimit = configuredOptions.PullRequestLimitPerRepository;
 

@@ -1,5 +1,7 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using GhPrApi.GitHub;
 using GhPrApi.Options;
 using Microsoft.Extensions.Logging;
@@ -10,6 +12,35 @@ namespace GhPrApi.Tests;
 
 public sealed class GitHubGraphQlClientTests
 {
+    // GitHub's GraphQL API statically rejects queries requesting more than 500,000 possible
+    // nodes -- this is a hard ceiling guard, not a performance guarantee (GitHub's backend can
+    // still time out executing a query well under this limit; that can only be observed against
+    // the real API, not asserted here). Reads MaxRepositoryPageSize and the labels(first: N)
+    // clause from the live client/query instead of duplicating the numbers, so this can't
+    // silently go stale the way it did once already (labels(first: 50), 510,100 nodes).
+    [Fact]
+    public void OpenPullRequestsQuery_worst_case_node_count_stays_under_githubs_500000_limit()
+    {
+        const int maxPrLimit = 100; // GitHub:PullRequestLimitPerRepository's validated max (Program.cs)
+
+        var maxRepoPageSizeField = typeof(GitHubGraphQlClient).GetField("MaxRepositoryPageSize", BindingFlags.NonPublic | BindingFlags.Static);
+        var maxRepoPageSize = Assert.IsType<int>(maxRepoPageSizeField?.GetValue(null));
+
+        var queryField = typeof(GitHubGraphQlClient).GetField("OpenPullRequestsQuery", BindingFlags.NonPublic | BindingFlags.Static);
+        var query = Assert.IsType<string>(queryField?.GetValue(null));
+        var labelsMatch = Regex.Match(query, @"labels\(first:\s*(\d+)\)");
+        Assert.True(labelsMatch.Success, "Expected to find a labels(first: N) clause in OpenPullRequestsQuery.");
+        var labelsLimit = int.Parse(labelsMatch.Groups[1].Value);
+
+        var worstCaseNodeCount = maxRepoPageSize
+            + (maxRepoPageSize * maxPrLimit)
+            + (maxRepoPageSize * maxPrLimit * labelsLimit);
+
+        Assert.True(
+            worstCaseNodeCount <= 500_000,
+            $"OpenPullRequestsQuery can request {worstCaseNodeCount} nodes at max page sizes, exceeding GitHub's 500,000 limit.");
+    }
+
     private const string SinglePageResponse = """
         {
           "data": {
