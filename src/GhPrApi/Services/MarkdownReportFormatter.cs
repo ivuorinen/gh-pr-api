@@ -17,7 +17,7 @@ public sealed class MarkdownReportFormatter
 
         foreach (var group in report.Groups)
         {
-            if (!GroupHasContent(group))
+            if (!group.HasContent())
             {
                 continue;
             }
@@ -55,21 +55,6 @@ public sealed class MarkdownReportFormatter
         }
 
         return builder.ToString().TrimEnd();
-    }
-
-    private static bool GroupHasContent(PullRequestGroup group)
-    {
-        if (group.PullRequests is { Count: > 0 })
-        {
-            return true;
-        }
-
-        if (group.DependencyGroups is null || group.DependencyGroups.Count == 0)
-        {
-            return false;
-        }
-
-        return group.DependencyGroups.Any(static dependencyGroup => dependencyGroup.PullRequests.Count > 0);
     }
 
     private static void AppendSectionSeparator(StringBuilder builder, ref bool firstSection)

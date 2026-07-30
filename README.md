@@ -69,7 +69,14 @@ Query parameters:
 |---|---:|---|
 | `owner` | no | Overrides configured `GitHub:Owner`. |
 | `refresh` | no | If `true`, bypasses the current in-memory cache. |
-| `format` | no | `json`, `markdown`, or `md`. Defaults to `json`. |
+| `format` | no | `json`, `markdown`, `md`, or `html`. Defaults to `json`. |
+
+Two format-fixed variants of the same endpoint are also available, ignoring `?format=`:
+
+- `GET /api/github/open-pull-requests.json` — always JSON.
+- `GET /api/github/open-pull-requests.html` — always renders the listing as an HTML page.
+
+All three accept the same `owner`/`refresh` query parameters.
 
 The endpoint is rate-limited (10 requests/minute per fixed window); a caller over the limit gets `429 Too Many Requests`. This mainly protects `refresh=true`, which bypasses the cache and re-queries GitHub in full.
 
@@ -147,6 +154,12 @@ If GitHub cannot be queried, Markdown output is exactly:
 ```text
 Unable to query GitHub.
 ```
+
+### HTML response
+
+`format=html` (or `GET /api/github/open-pull-requests.html`) renders the same grouped listing as a minimal, self-contained HTML page: an `<h1>` with the owner, an `<h2>`/`<h3>` per group and dependency group, and a `<table>` per group (Flags, PR, Author, Age, Review, CI, Branch) with one `<tr>` per PR, its title linking to the GitHub URL. All GitHub-sourced text (titles, authors) is HTML-encoded.
+
+If GitHub cannot be queried, HTML output is an HTML page with the same `Unable to query GitHub.` message, at HTTP 503.
 
 ### `GET /health/live`
 

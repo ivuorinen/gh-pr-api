@@ -14,7 +14,18 @@ public sealed record PullRequestGroup(
     string Key,
     string Title,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PullRequestItem>? PullRequests = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<DependencyPullRequestGroup>? DependencyGroups = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<DependencyPullRequestGroup>? DependencyGroups = null)
+{
+    public bool HasContent()
+    {
+        if (PullRequests is { Count: > 0 })
+        {
+            return true;
+        }
+
+        return DependencyGroups?.Any(static dependencyGroup => dependencyGroup.PullRequests.Count > 0) ?? false;
+    }
+}
 
 public sealed record DependencyPullRequestGroup(
     string DependencyName,

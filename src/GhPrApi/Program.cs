@@ -35,6 +35,7 @@ builder.Services.AddSingleton<DependencyNameDetector>();
 builder.Services.AddSingleton<SecurityDetector>();
 builder.Services.AddSingleton<PullRequestReportBuilder>();
 builder.Services.AddSingleton<MarkdownReportFormatter>();
+builder.Services.AddSingleton<HtmlReportFormatter>();
 builder.Services.AddSingleton<PullRequestReportCoalescer>();
 builder.Services.AddSingleton<GitHubApiHealthState>();
 builder.Services.AddScoped<IPullRequestReportService, PullRequestReportService>();
@@ -86,10 +87,27 @@ app.MapGet("/health/ready", GetReadiness)
 
 app.MapGet("/api/github/open-pull-requests", GetOpenPullRequestsAsync)
     .WithName("GetOpenPullRequests")
-    .WithSummary("Lists currently open pull requests across public, non-archived GitHub repositories owned by the configured account.")
+    .WithSummary("Lists currently open pull requests across public, non-archived GitHub repositories owned by the configured account. Format via ?format=json|markdown|html, defaults to json.")
     .Produces<PullRequestReport>()
     .Produces<string>(StatusCodes.Status200OK, "text/markdown")
+    .Produces<string>(StatusCodes.Status200OK, "text/html")
     .ProducesProblem(StatusCodes.Status400BadRequest)
+    .ProducesProblem(StatusCodes.Status429TooManyRequests)
+    .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+    .RequireRateLimiting(RateLimiterPolicies.GitHubApi);
+
+app.MapGet("/api/github/open-pull-requests.json", GetOpenPullRequestsJsonAsync)
+    .WithName("GetOpenPullRequestsJson")
+    .WithSummary("Same as GET /api/github/open-pull-requests, always as JSON regardless of ?format=.")
+    .Produces<PullRequestReport>()
+    .ProducesProblem(StatusCodes.Status429TooManyRequests)
+    .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+    .RequireRateLimiting(RateLimiterPolicies.GitHubApi);
+
+app.MapGet("/api/github/open-pull-requests.html", GetOpenPullRequestsHtmlAsync)
+    .WithName("GetOpenPullRequestsHtml")
+    .WithSummary("Same as GET /api/github/open-pull-requests, rendered as an HTML page, regardless of ?format=.")
+    .Produces<string>(StatusCodes.Status200OK, "text/html")
     .ProducesProblem(StatusCodes.Status429TooManyRequests)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
     .RequireRateLimiting(RateLimiterPolicies.GitHubApi);
@@ -121,42 +139,91 @@ static async Task<IResult> GetOpenPullRequestsAsync(
     string? format,
     IPullRequestReportService reports,
     MarkdownReportFormatter markdown,
+    HtmlReportFormatter html,
     CancellationToken cancellationToken)
 {
-    var responseFormat = string.IsNullOrWhiteSpace(format)
-        ? "JSON"
-        : format.Trim().ToUpperInvariant();
-
-    if (responseFormat is not ("JSON" or "MARKDOWN" or "MD"))
+    var responseFormat = ParseFormat(format);
+    if (responseFormat is null)
     {
         return Results.Problem(
             title: "Unsupported format.",
-            detail: "Use format=json or format=markdown.",
+            detail: "Use format=json, format=markdown, or format=html.",
             statusCode: StatusCodes.Status400BadRequest);
     }
 
+    return await RenderReportAsync(responseFormat.Value, owner, refresh == true, reports, markdown, html, cancellationToken).ConfigureAwait(false);
+}
+
+static Task<IResult> GetOpenPullRequestsJsonAsync(
+    string? owner,
+    bool? refresh,
+    IPullRequestReportService reports,
+    MarkdownReportFormatter markdown,
+    HtmlReportFormatter html,
+    CancellationToken cancellationToken) =>
+    RenderReportAsync(ResponseFormat.Json, owner, refresh == true, reports, markdown, html, cancellationToken);
+
+static Task<IResult> GetOpenPullRequestsHtmlAsync(
+    string? owner,
+    bool? refresh,
+    IPullRequestReportService reports,
+    MarkdownReportFormatter markdown,
+    HtmlReportFormatter html,
+    CancellationToken cancellationToken) =>
+    RenderReportAsync(ResponseFormat.Html, owner, refresh == true, reports, markdown, html, cancellationToken);
+
+static ResponseFormat? ParseFormat(string? format)
+{
+    if (string.IsNullOrWhiteSpace(format))
+    {
+        return ResponseFormat.Json;
+    }
+
+    return format.Trim().ToUpperInvariant() switch
+    {
+        "JSON" => ResponseFormat.Json,
+        "MARKDOWN" or "MD" => ResponseFormat.Markdown,
+        "HTML" => ResponseFormat.Html,
+        _ => null,
+    };
+}
+
+static async Task<IResult> RenderReportAsync(
+    ResponseFormat format,
+    string? owner,
+    bool refresh,
+    IPullRequestReportService reports,
+    MarkdownReportFormatter markdown,
+    HtmlReportFormatter html,
+    CancellationToken cancellationToken)
+{
     try
     {
-        var report = await reports.GetOpenPullRequestsAsync(owner, refresh == true, cancellationToken).ConfigureAwait(false);
+        var report = await reports.GetOpenPullRequestsAsync(owner, refresh, cancellationToken).ConfigureAwait(false);
 
-        if (responseFormat is "MARKDOWN" or "MD")
+        return format switch
         {
-            return Results.Text(markdown.Format(report), "text/markdown; charset=utf-8");
-        }
-
-        return Results.Ok(report);
+            ResponseFormat.Markdown => Results.Text(markdown.Format(report), "text/markdown; charset=utf-8"),
+            ResponseFormat.Html => Results.Text(html.Format(report), "text/html; charset=utf-8"),
+            _ => Results.Ok(report),
+        };
     }
     catch (GitHubQueryException)
     {
-        if (responseFormat is "MARKDOWN" or "MD")
+        return format switch
         {
-            return Results.Text("Unable to query GitHub.", "text/plain; charset=utf-8", statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        return Results.Problem(
-            title: "Unable to query GitHub.",
-            statusCode: StatusCodes.Status503ServiceUnavailable);
+            ResponseFormat.Markdown => Results.Text("Unable to query GitHub.", "text/plain; charset=utf-8", statusCode: StatusCodes.Status503ServiceUnavailable),
+            ResponseFormat.Html => Results.Text(HtmlReportFormatter.FormatError("Unable to query GitHub."), "text/html; charset=utf-8", statusCode: StatusCodes.Status503ServiceUnavailable),
+            _ => Results.Problem(title: "Unable to query GitHub.", statusCode: StatusCodes.Status503ServiceUnavailable),
+        };
     }
+}
+
+internal enum ResponseFormat
+{
+    Json,
+    Markdown,
+    Html,
 }
 
 internal static class RateLimiterPolicies
