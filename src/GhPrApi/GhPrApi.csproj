@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
     <!-- Microsoft.AspNetCore.OpenApi 10.0.0 transitively pulls Microsoft.OpenApi 2.0.0, which is
          vulnerable to GHSA-v5pm-xwqc-g5wc (stack overflow on circular schema refs); pin the fix. -->
     <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />

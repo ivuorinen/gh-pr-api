@@ -4,6 +4,7 @@ using GhPrApi.Models;
 using GhPrApi.Options;
 using GhPrApi.Services;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -43,6 +44,16 @@ builder.Services.AddHttpClient<IGitHubGraphQlClient, GitHubGraphQlClient>(client
     client.BaseAddress = new Uri("https://api.github.com/graphql");
     client.DefaultRequestHeaders.UserAgent.ParseAdd("gh-pr-api/1.0");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+})
+.AddStandardResilienceHandler(options =>
+{
+    // Default AttemptTimeout (10s) is too tight for GitHub GraphQL under load -- raised so a
+    // slow-but-real response isn't cut off and retried needlessly. CircuitBreaker.SamplingDuration
+    // must be >= 2x AttemptTimeout; TotalRequestTimeout comfortably covers the retry budget
+    // (up to 4 attempts at 15s each) so a sustained outage still fails within a bounded time.
+    options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(15);
+    options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
+    options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(70);
 });
 
 builder.Services.AddOpenApi();

@@ -73,6 +73,8 @@ Query parameters:
 
 The endpoint is rate-limited (10 requests/minute per fixed window); a caller over the limit gets `429 Too Many Requests`. This mainly protects `refresh=true`, which bypasses the cache and re-queries GitHub in full.
 
+Calls to the GitHub GraphQL API automatically retry transient failures (5xx, timeouts) with exponential backoff, up to a 70s total budget per call; a sustained GitHub outage still surfaces as `503 Unable to query GitHub.` once that budget is exhausted.
+
 ### JSON response
 
 ```json
