@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using GhPrApi.GitHub;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -132,6 +133,34 @@ public sealed class EndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
         Assert.Contains("Unable to query GitHub.", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpenApi_document_generates_and_describes_every_route()
+    {
+        // Microsoft.AspNetCore.OpenApi declares only Microsoft.OpenApi >= 2.0.0, so the
+        // explicit reference that dodges GHSA-v5pm-xwqc-g5wc can drag the runtime across a
+        // major version. Document generation is where that surfaces, and it is the one
+        // documented endpoint no other test touches.
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/openapi/v1.json");
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var paths = document.GetProperty("paths");
+        foreach (var route in new[]
+                 {
+                     "/api/github/open-pull-requests",
+                     "/api/github/open-pull-requests.json",
+                     "/api/github/open-pull-requests.html",
+                     "/health/live",
+                     "/health/ready",
+                 })
+        {
+            Assert.True(paths.TryGetProperty(route, out _), $"OpenAPI document is missing {route}.");
+        }
     }
 
     [Fact]

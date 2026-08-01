@@ -19,8 +19,16 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
-    <!-- Microsoft.AspNetCore.OpenApi 10.0.0 transitively pulls Microsoft.OpenApi 2.0.0, which is
-         vulnerable to GHSA-v5pm-xwqc-g5wc (stack overflow on circular schema refs); pin the fix. -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
+    <!-- Microsoft.AspNetCore.OpenApi still declares only Microsoft.OpenApi >= 2.0.0, and NuGet
+         resolves the lowest match, which is the version vulnerable to GHSA-v5pm-xwqc-g5wc
+         (stack overflow on circular schema refs). Keep an explicit reference to force a fixed
+         one. /openapi/v1.json is covered by an endpoint test so this stays honest.
+
+         Held on 2.x deliberately. 3.x makes IOpenApiMediaType.Example read-only, which does
+         not compile against the Microsoft.AspNetCore.OpenApi 10.0.10 source generator:
+           OpenApiXmlCommentSupport.generated.cs(399,41): error CS0200: Property or indexer
+           'IOpenApiMediaType.Example' cannot be assigned to
+         Revisit when Microsoft.AspNetCore.OpenApi ships a release built against 3.x. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
   </ItemGroup>
 </Project>
