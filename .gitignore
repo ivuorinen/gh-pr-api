@@ -9,3 +9,10 @@ coverage/
 artifacts/
 .env
 appsettings.Development.json
+
+# GitHub:CachePath defaults to a relative "cache.db", so running the app locally drops the
+# SQLite cache and its WAL sidecars in the working directory. The sidecars need their own
+# rules: *.db does not match cache.db-wal.
+*.db
+*.db-shm
+*.db-wal
