@@ -42,10 +42,6 @@ builder.Services.AddSingleton<SecurityDetector>();
 builder.Services.AddSingleton<PullRequestReportBuilder>();
 builder.Services.AddSingleton<MarkdownReportFormatter>();
 builder.Services.AddSingleton<HtmlReportFormatter>();
-// Still required until PullRequestReportService stops depending on it; HybridCache's per-key
-// stampede protection replaces it in the next change.
-builder.Services.AddSingleton<PullRequestReportCoalescer>();
-
 builder.Services.AddSingleton<IDistributedCache>(serviceProvider =>
 {
     var gitHubOptions = serviceProvider.GetRequiredService<IOptionsMonitor<GitHubOptions>>().CurrentValue;

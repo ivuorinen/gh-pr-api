@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
+using GhPrApi.Caching;
 using GhPrApi.GitHub;
 using GhPrApi.Models;
 using GhPrApi.Options;
-using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 
 namespace GhPrApi.Services;
@@ -12,83 +14,126 @@ public sealed class PullRequestReportService : IPullRequestReportService
 
     private readonly IGitHubGraphQlClient _gitHub;
     private readonly PullRequestReportBuilder _builder;
-    private readonly IMemoryCache _cache;
+    private readonly HybridCache _cache;
+    private readonly CiNormalizer _ciNormalizer;
     private readonly IOptionsMonitor<GitHubOptions> _options;
-    private readonly PullRequestReportCoalescer _coalescer;
     private readonly ILogger<PullRequestReportService> _logger;
 
     public PullRequestReportService(
         IGitHubGraphQlClient gitHub,
         PullRequestReportBuilder builder,
-        IMemoryCache cache,
+        HybridCache cache,
+        CiNormalizer ciNormalizer,
         IOptionsMonitor<GitHubOptions> options,
-        PullRequestReportCoalescer coalescer,
         ILogger<PullRequestReportService> logger)
     {
         _gitHub = gitHub;
         _builder = builder;
         _cache = cache;
+        _ciNormalizer = ciNormalizer;
         _options = options;
-        _coalescer = coalescer;
         _logger = logger;
     }
 
-    public Task<PullRequestReport> GetOpenPullRequestsAsync(
+    public async Task<PullRequestReport> GetOpenPullRequestsAsync(
         string? ownerOverride,
         bool refresh,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         var options = _options.CurrentValue;
-        var owner = string.IsNullOrWhiteSpace(ownerOverride)
-            ? options.Owner
-            : ownerOverride.Trim();
+        var owner = string.IsNullOrWhiteSpace(ownerOverride) ? options.Owner : ownerOverride.Trim();
+        var flags = refresh
+            ? HybridCacheEntryFlags.DisableLocalCacheRead | HybridCacheEntryFlags.DisableDistributedCacheRead
+            : HybridCacheEntryFlags.None;
 
-        var cacheKey = $"github-open-pull-requests:{owner}";
-        if (!refresh && _cache.TryGetValue(cacheKey, out PullRequestReport? cachedReport) && cachedReport is not null)
-        {
-            return Task.FromResult(cachedReport);
-        }
-
-        // Coalesced against a shared key, so this fetch must outlive any single caller's
-        // cancellation -- otherwise one caller disconnecting would cancel the response for
-        // every other request piggybacking on the same in-flight fetch.
-        return _coalescer.GetOrAddAsync(cacheKey, () => FetchAndCacheAsync(owner, cacheKey));
-    }
-
-    private async Task<PullRequestReport> FetchAndCacheAsync(string owner, string cacheKey)
-    {
-        var result = await _gitHub.GetOpenPullRequestsAsync(owner, CancellationToken.None).ConfigureAwait(false);
-        var enrichedPullRequests = new GitHubPullRequest[result.PullRequests.Count];
-
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentStatusRequests };
-        await Parallel.ForEachAsync(
-            Enumerable.Range(0, result.PullRequests.Count),
-            parallelOptions,
-            async (index, ct) =>
+        var listing = await _cache.GetOrCreateAsync(
+            $"listing:v1:{owner}",
+            (Client: _gitHub, Owner: owner),
+            static (state, token) => new ValueTask<GitHubOpenPullRequestsResult>(
+                state.Client.GetOpenPullRequestsAsync(state.Owner, token)),
+            new HybridCacheEntryOptions
             {
-                var pullRequest = result.PullRequests[index];
-                var statusDetails = await _gitHub.GetPullRequestStatusDetailsAsync(pullRequest, ct).ConfigureAwait(false);
-                enrichedPullRequests[index] = pullRequest with { StatusDetails = statusDetails };
+                Expiration = TimeSpan.FromSeconds(options.CacheTtlSeconds),
+                Flags = flags,
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var enriched = new GitHubPullRequest[listing.PullRequests.Count];
+        var unresolved = new ConcurrentBag<string>();
+
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, listing.PullRequests.Count),
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = MaxConcurrentStatusRequests,
+                CancellationToken = cancellationToken,
+            },
+            async (index, token) =>
+            {
+                var pullRequest = listing.PullRequests[index];
+                try
+                {
+                    var details = await GetStatusDetailsAsync(pullRequest, flags, token).ConfigureAwait(false);
+                    enriched[index] = pullRequest with { StatusDetails = details };
+                }
+                catch (GitHubQueryException ex)
+                {
+                    // One pull request's status failing must not discard the whole fetch.
+                    // Nothing is cached for this key, so a retry re-fetches only this one.
+                    var id = $"{pullRequest.RepositoryNameWithOwner}#{pullRequest.Number}";
+                    _logger.LogWarning(ex, "Status details unresolved for {PullRequest}.", id);
+                    enriched[index] = pullRequest with { StatusUnresolved = true };
+                    unresolved.Add(id);
+                }
             }).ConfigureAwait(false);
 
-        var report = _builder.Build(owner, enrichedPullRequests, result.Truncated);
+        var unresolvedIds = unresolved.IsEmpty
+            ? null
+            : unresolved.Order(StringComparer.Ordinal).ToArray();
 
-        // Cache-miss volume is the only number that predicts GitHub quota consumption, and
-        // it was previously invisible -- an exhausted token looked identical to a GitHub outage.
-        _logger.LogInformation(
-            "Fetched open pull requests for {Owner}: {PullRequestCount} PRs, truncated={Truncated}",
-            owner,
-            result.PullRequests.Count,
-            result.Truncated);
+        // The assembled report is deliberately not cached: it is derived from the parts above,
+        // and caching it would restore the all-or-nothing unit this split exists to remove.
+        return _builder.Build(owner, enriched, listing.Truncated, unresolvedIds);
+    }
 
-        var currentOptions = _options.CurrentValue;
-        if (currentOptions.CacheTtlSeconds > 0)
+    private async Task<GitHubPullRequestStatusDetails> GetStatusDetailsAsync(
+        GitHubPullRequest pullRequest,
+        HybridCacheEntryFlags flags,
+        CancellationToken cancellationToken)
+    {
+        var pendingTtl = TimeSpan.FromSeconds(_options.CurrentValue.StatusCacheTtlSeconds);
+        var key = $"status:v1:{pullRequest.RepositoryNameWithOwner}#{pullRequest.Number}@{pullRequest.HeadRefOid}";
+        var fetched = false;
+
+        var details = await _cache.GetOrCreateAsync(
+            key,
+            (Client: _gitHub, PullRequest: pullRequest),
+            async (state, token) =>
+            {
+                fetched = true;
+                return await state.Client
+                    .GetPullRequestStatusDetailsAsync(state.PullRequest, token)
+                    .ConfigureAwait(false);
+            },
+            new HybridCacheEntryOptions { Expiration = pendingTtl, Flags = flags },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // HybridCache fixes entry options before the factory runs, so the TTL cannot depend on
+        // what was fetched. Write with the short TTL, then extend once if the checks turned out
+        // to be settled: two writes on a miss, none on a hit.
+        if (fetched)
         {
-            _cache.Set(cacheKey, report, TimeSpan.FromSeconds(currentOptions.CacheTtlSeconds));
+            var ttl = StatusCacheTtl.For(_ciNormalizer.Normalize(details), pendingTtl);
+            if (ttl != pendingTtl)
+            {
+                await _cache.SetAsync(
+                    key,
+                    details,
+                    new HybridCacheEntryOptions { Expiration = ttl },
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        return report;
+        return details;
     }
 }
