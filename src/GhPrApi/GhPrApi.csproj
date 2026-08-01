@@ -3,6 +3,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>GhPrApi</RootNamespace>
     <AssemblyName>GhPrApi</AssemblyName>
+    <!-- Committed packages.lock.json, restored in locked mode by CI and the Dockerfile: an
+         unexpected transitive change fails the build instead of entering the published image
+         silently. A vulnerable transitive (GHSA-v5pm-xwqc-g5wc) already reached this once.
+         Scoped to this project, the only one that ships. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

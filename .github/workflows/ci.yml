@@ -28,10 +28,14 @@ jobs:
         run: dotnet build --configuration Release --no-restore
 
       - name: Test
+        id: test
         run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults
 
+      # Only when the tests actually ran: upload on pass or fail (coverage of a failing run is
+      # still useful), but stay skipped if an earlier step died -- otherwise a restore failure
+      # reports a second, misleading "no coverage found" error on an already-red run.
       - name: Upload coverage
-        if: always()
+        if: steps.test.outcome == 'success' || steps.test.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage

@@ -6,9 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <!-- Committed packages.lock.json, restored in locked mode by CI and the Dockerfile: an
-         unexpected transitive change fails the build instead of entering the published image
-         silently. A vulnerable transitive (GHSA-v5pm-xwqc-g5wc) already reached this once. -->
-    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- RestorePackagesWithLockFile is set per-project in src/GhPrApi, NOT here. Setting it
+         solution-wide also locks the test project, whose lockfile records GhPrApi's transitive
+         graph; Dependabot regenerates lockfiles only in the directory of the manifest it
+         updated, so any src package bump left the test lockfile stale and failed locked-mode
+         restore with NU1004. Only the shipped app needs the guarantee. -->
   </PropertyGroup>
 </Project>
