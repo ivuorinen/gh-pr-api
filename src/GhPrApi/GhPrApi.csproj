@@ -24,11 +24,22 @@
          (stack overflow on circular schema refs). Keep an explicit reference to force a fixed
          one. /openapi/v1.json is covered by an endpoint test so this stays honest.
 
-         Held on 2.x deliberately. 3.x makes IOpenApiMediaType.Example read-only, which does
-         not compile against the Microsoft.AspNetCore.OpenApi 10.0.10 source generator:
-           OpenApiXmlCommentSupport.generated.cs(399,41): error CS0200: Property or indexer
-           'IOpenApiMediaType.Example' cannot be assigned to
-         Revisit when Microsoft.AspNetCore.OpenApi ships a release built against 3.x. -->
+         Held on 2.x, and it is not a version-bump away. Microsoft.OpenApi 3.x pairs with
+         Microsoft.AspNetCore.OpenApi 11.x on net11.0; the net10.0 line declares 2.0.0 and is
+         binary-incompatible with 3.x. Forcing 3.9.0 was tried and fails twice over:
+
+           1. compile: the bundled XmlCommentGenerator assigns IOpenApiMediaType.Example,
+              read-only in 3.x
+                error CS0200: Property or indexer 'IOpenApiMediaType.Example'
+                cannot be assigned to
+           2. runtime, after stripping that generator so it does build: GET /openapi/v1.json
+              returns 500
+                System.MissingMethodException: Method not found:
+                'IDictionary`2<String,Microsoft.OpenApi.OpenApiMediaType>
+                 Microsoft.OpenApi.OpenApiResponse.get_Content()'
+
+         The second is inside shipped AspNetCore.OpenApi IL, so no project-side change fixes
+         it. Revisit only when this project moves to net11.0 with AspNetCore.OpenApi 11.x. -->
     <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
   </ItemGroup>
 </Project>
