@@ -18,6 +18,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Microsoft.Data.Sqlite 10.0.10 transitively pulls SQLitePCLRaw.lib.e_sqlite3 2.1.11,
+         which bundles a SQLite build covered by GHSA-2m69-gcr7-jv3q (high). The advisory range
+         is <= 2.1.11, so the 2.1.12 patch clears it; pin the fix directly. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
     <!-- Microsoft.AspNetCore.OpenApi still declares only Microsoft.OpenApi >= 2.0.0, and NuGet
          resolves the lowest match, which is the version vulnerable to GHSA-v5pm-xwqc-g5wc
