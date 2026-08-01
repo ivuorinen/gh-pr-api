@@ -1,9 +1,13 @@
 using System.Text.Json.Serialization;
+using GhPrApi.Caching;
 using GhPrApi.GitHub;
 using GhPrApi.Models;
 using GhPrApi.Options;
 using GhPrApi.Services;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 
@@ -22,6 +26,8 @@ builder.Services
     .Validate(options => options.RepositoryLimit is >= 1 and <= 1_000, "GitHub:RepositoryLimit must be between 1 and 1000.")
     .Validate(options => options.PullRequestLimitPerRepository is >= 1 and <= 100, "GitHub:PullRequestLimitPerRepository must be between 1 and 100.")
     .Validate(options => options.StatusCheckLimitPerPullRequest is >= 1 and <= 100, "GitHub:StatusCheckLimitPerPullRequest must be between 1 and 100.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.CachePath), "GitHub:CachePath is required.")
+    .Validate(options => options.StatusCacheTtlSeconds is >= 5 and <= 3600, "GitHub:StatusCacheTtlSeconds must be between 5 and 3600.")
     .ValidateOnStart();
 
 builder.Services.AddProblemDetails();
@@ -36,7 +42,33 @@ builder.Services.AddSingleton<SecurityDetector>();
 builder.Services.AddSingleton<PullRequestReportBuilder>();
 builder.Services.AddSingleton<MarkdownReportFormatter>();
 builder.Services.AddSingleton<HtmlReportFormatter>();
+// Still required until PullRequestReportService stops depending on it; HybridCache's per-key
+// stampede protection replaces it in the next change.
 builder.Services.AddSingleton<PullRequestReportCoalescer>();
+
+builder.Services.AddSingleton<IDistributedCache>(serviceProvider =>
+{
+    var gitHubOptions = serviceProvider.GetRequiredService<IOptionsMonitor<GitHubOptions>>().CurrentValue;
+    var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("GhPrApi.Caching");
+    var timeProvider = serviceProvider.GetRequiredService<TimeProvider>();
+
+    try
+    {
+        return new SqliteDistributedCache(gitHubOptions.CachePath, timeProvider);
+    }
+    catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
+    {
+        // Fail open. The durable tier is an optimisation, never a source of truth, so an
+        // unmounted or unwritable volume must cost a cold start rather than availability.
+        logger.LogWarning(
+            ex,
+            "Durable cache unavailable at {CachePath}; running with the in-memory tier only.",
+            gitHubOptions.CachePath);
+        return new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
+    }
+});
+
+builder.Services.AddHybridCache();
 builder.Services.AddSingleton<GitHubApiHealthState>();
 builder.Services.AddScoped<IPullRequestReportService, PullRequestReportService>();
 

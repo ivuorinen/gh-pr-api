@@ -164,6 +164,19 @@ public sealed class EndpointTests
     }
 
     [Fact]
+    public async Task App_starts_and_serves_when_the_cache_path_is_unusable()
+    {
+        // Fail open: the durable cache is an optimisation, never a source of truth. An
+        // unmounted or unwritable volume must cost performance, not availability.
+        using var factory = CreateFactory(cachePath: "/proc/definitely-not-writable/cache.db");
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/live");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Liveness_is_ok_even_with_no_token_configured()
     {
         using var factory = CreateFactory(token: "");
@@ -235,7 +248,8 @@ public sealed class EndpointTests
 
     private static WebApplicationFactory<Program> CreateFactory(
         FakeGitHubGraphQlClient? gitHub = null,
-        string token = "test-token") =>
+        string token = "test-token",
+        string? cachePath = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(
@@ -243,6 +257,8 @@ public sealed class EndpointTests
                 {
                     ["GitHub:Owner"] = "ivuorinen",
                     ["GitHub:Token"] = token,
+                    ["GitHub:CachePath"] = cachePath
+                        ?? Path.Combine(Path.GetTempPath(), $"ghpr-test-{Guid.NewGuid():N}.db"),
                 }));
             builder.ConfigureTestServices(services =>
             {
