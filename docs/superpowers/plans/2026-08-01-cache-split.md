@@ -6,7 +6,13 @@
 
 **Architecture:** Two cache units — a listing (repos + their open PRs, 9 requests) and per-PR status keyed by head commit SHA (1 request each). Both go through `HybridCache`: L1 in-memory with per-key stampede protection, L2 a SQLite file on a mounted volume. Per-PR status TTL adapts to whether checks are pending, failing, or settled. A failed status lookup degrades that PR to `ci: "unknown"` instead of failing the whole request.
 
-**Tech Stack:** .NET 10, ASP.NET Core minimal API, `Microsoft.Extensions.Caching.Hybrid` 10.8.0, `Microsoft.Data.Sqlite` 10.0.10, xunit 2.9.3.
+**Tech Stack:** .NET 10, ASP.NET Core minimal API, `Microsoft.Extensions.Caching.Hybrid` 10.8.0, `Microsoft.Data.Sqlite` 10.0.10 (with the `SQLitePCLRaw` 3.0.5 family pinned over GHSA-2m69-gcr7-jv3q), `xunit.v3` 3.2.2.
+
+> The test suite moved from `xunit` 2.9.3 to `xunit.v3` 3.2.2 during execution, after
+> `dotnet list package --deprecated` flagged the 2.x line as Legacy. v3 requires
+> `OutputType=Exe` on the test project, and its xUnit1051 analyzer requires
+> `TestContext.Current.CancellationToken` on every call that accepts one. Test code below
+> predates that move; follow the current files for the exact idiom.
 
 **Spec:** `docs/superpowers/specs/2026-08-01-cache-split-design.md`
 

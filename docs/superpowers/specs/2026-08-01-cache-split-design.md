@@ -1,7 +1,16 @@
 # Split the GitHub fetch into independently cached units
 
 Date: 2026-08-01
-Status: approved, not yet implemented
+Status: implemented in PR #14 (branch `feat/cache-split`)
+
+Two things in this document were settled during implementation rather than before it:
+
+- The **open question** at the end (whether a per-caller `CancellationToken` can flow through
+  `HybridCache`) resolved **yes**, so the real request token is passed through. Covered by
+  `One_caller_cancelling_does_not_break_the_other`.
+- `GitHub:CacheTtlSeconds = 0` has always meant "do not cache the listing", and `HybridCache`
+  rejects a non-positive `Expiration`. That case bypasses the cache; see
+  `Cache_ttl_of_zero_disables_listing_caching_instead_of_throwing`.
 
 ## Problem
 
