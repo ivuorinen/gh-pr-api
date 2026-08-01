@@ -82,6 +82,49 @@ public sealed class SqliteDistributedCacheTests : IDisposable
     }
 
     [Fact]
+    public void Get_degrades_to_a_miss_when_the_database_file_is_corrupt()
+    {
+        // Fail open: HybridCache surfaces backend exceptions to the caller by default, so a
+        // throwing Get would turn a cache problem into a failed request.
+        var cache = Create(out _);
+        cache.Set("k", [1], Expires(TimeSpan.FromMinutes(5)));
+        Corrupt();
+
+        Assert.Null(cache.Get("k"));
+    }
+
+    [Fact]
+    public void Set_degrades_to_a_no_op_when_the_database_file_is_corrupt()
+    {
+        var cache = Create(out _);
+        cache.Set("k", [1], Expires(TimeSpan.FromMinutes(5)));
+        Corrupt();
+
+        cache.Set("k", [2], Expires(TimeSpan.FromMinutes(5)));
+    }
+
+    [Fact]
+    public void Remove_degrades_to_a_no_op_when_the_database_file_is_corrupt()
+    {
+        var cache = Create(out _);
+        cache.Set("k", [1], Expires(TimeSpan.FromMinutes(5)));
+        Corrupt();
+
+        cache.Remove("k");
+    }
+
+    [Fact]
+    public void Set_still_rejects_an_entry_with_no_absolute_expiry_after_a_corrupt_file()
+    {
+        // The fail-open catch must not swallow caller bugs: a missing expiry is an
+        // ArgumentException, not a backend failure, and still has to surface.
+        var cache = Create(out _);
+        Corrupt();
+
+        Assert.Throws<ArgumentException>(() => cache.Set("k", [1], new DistributedCacheEntryOptions()));
+    }
+
+    [Fact]
     public void Constructor_throws_when_the_path_is_not_writable()
     {
         var unwritable = Path.Combine(Path.GetTempPath(), $"ghpr-{Guid.NewGuid():N}", "nested", "cache.db");
@@ -97,6 +140,14 @@ public sealed class SqliteDistributedCacheTests : IDisposable
 
     private static DistributedCacheEntryOptions Expires(TimeSpan ttl) =>
         new() { AbsoluteExpirationRelativeToNow = ttl };
+
+    /// <summary>Replaces the database with bytes SQLite will reject, so every subsequent
+    /// operation raises a real SqliteException rather than a simulated one.</summary>
+    private void Corrupt()
+    {
+        SqliteConnection.ClearAllPools();
+        File.WriteAllText(_path, "this is not a sqlite database");
+    }
 
     public void Dispose()
     {

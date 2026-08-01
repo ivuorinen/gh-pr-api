@@ -27,27 +27,24 @@
     <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="10.8.0" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
-    <!-- Microsoft.AspNetCore.OpenApi still declares only Microsoft.OpenApi >= 2.0.0, and NuGet
+    <!-- Microsoft.AspNetCore.OpenApi declares only Microsoft.OpenApi >= 2.0.0, and NuGet
          resolves the lowest match, which is the version vulnerable to GHSA-v5pm-xwqc-g5wc
          (stack overflow on circular schema refs). Keep an explicit reference to force a fixed
          one. /openapi/v1.json is covered by an endpoint test so this stays honest.
 
-         Held on 2.x, and it is not a version-bump away. Microsoft.OpenApi 3.x pairs with
-         Microsoft.AspNetCore.OpenApi 11.x on net11.0; the net10.0 line declares 2.0.0 and is
-         binary-incompatible with 3.x. Forcing 3.9.0 was tried and fails twice over:
+         2.11.0 is the newest 2.x and IS the correct latest version here, not a workaround.
+         Per the vendor's own upgrade guide, 3.x is not applicable to this project:
 
-           1. compile: the bundled XmlCommentGenerator assigns IOpenApiMediaType.Example,
-              read-only in 3.x
-                error CS0200: Property or indexer 'IOpenApiMediaType.Example'
-                cannot be assigned to
-           2. runtime, after stripping that generator so it does build: GET /openapi/v1.json
-              returns 500
-                System.MissingMethodException: Method not found:
-                'IDictionary`2<String,Microsoft.OpenApi.OpenApiMediaType>
-                 Microsoft.OpenApi.OpenApiResponse.get_Content()'
+           "If you are using this library with AspNetCore OpenAPI versions = 10.X then you
+            must remain on version 2.x as it's not compatible with version 3 or above of
+            this library."
+           https://github.com/microsoft/OpenAPI.NET/blob/main/docs/upgrade-guide-3.md
 
-         The second is inside shipped AspNetCore.OpenApi IL, so no project-side change fixes
-         it. Revisit only when this project moves to net11.0 with AspNetCore.OpenApi 11.x. -->
+         Every released Microsoft.AspNetCore.OpenApi 10.x (10.0.0 through 10.0.10) depends on
+         Microsoft.OpenApi 2.0.0; 3.x pairs with AspNetCore.OpenApi 11.x on net11.0. Forcing
+         3.9.0 fails to compile (CS0200: IOpenApiMediaType.Example is read-only in 3.x) and,
+         once that generator is stripped, 500s at runtime with MissingMethodException on
+         OpenApiResponse.get_Content. Revisit only when this project targets net11.0. -->
     <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
   </ItemGroup>
 </Project>

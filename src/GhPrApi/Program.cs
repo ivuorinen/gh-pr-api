@@ -18,6 +18,17 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
 
+// Environment variables pick up stray whitespace easily -- a trailing newline from a secrets
+// file or a copy-paste is the common case. Trim once here, before validation, so the endpoint's
+// owner check and the cache key cannot disagree about what the configured owner is, and so a
+// token with a trailing newline does not fail auth with a confusing upstream error.
+builder.Services.PostConfigure<GitHubOptions>(options =>
+{
+    options.Owner = options.Owner?.Trim() ?? string.Empty;
+    options.Token = options.Token?.Trim();
+    options.CachePath = options.CachePath?.Trim() ?? string.Empty;
+});
+
 builder.Services
     .AddOptions<GitHubOptions>()
     .Bind(builder.Configuration.GetSection(GitHubOptions.SectionName))
@@ -50,7 +61,10 @@ builder.Services.AddSingleton<IDistributedCache>(serviceProvider =>
 
     try
     {
-        return new SqliteDistributedCache(gitHubOptions.CachePath, timeProvider);
+        return new SqliteDistributedCache(
+            gitHubOptions.CachePath,
+            timeProvider,
+            serviceProvider.GetRequiredService<ILogger<SqliteDistributedCache>>());
     }
     catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
     {
