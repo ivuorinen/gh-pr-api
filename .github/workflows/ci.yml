@@ -6,18 +6,30 @@ on:
     branches:
       - main
 
+# Only to read the repository contents this job builds and tests. Nothing is published.
 permissions:
   contents: read
 
+# Supersede an in-flight run of the same ref: a push amending a PR makes the previous
+# build's result irrelevant, and cancelling frees the runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes; leaving the token in .git/config would expose it to every
+          # later step and to anything that archives the workspace.
+          persist-credentials: false
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
 
@@ -36,7 +48,7 @@ jobs:
       # reports a second, misleading "no coverage found" error on an already-red run.
       - name: Upload coverage
         if: steps.test.outcome == 'success' || steps.test.outcome == 'failure'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: TestResults/**/coverage.cobertura.xml
