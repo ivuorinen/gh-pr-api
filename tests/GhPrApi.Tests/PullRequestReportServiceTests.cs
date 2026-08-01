@@ -3,6 +3,7 @@ using GhPrApi.Models;
 using GhPrApi.Options;
 using GhPrApi.Services;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace GhPrApi.Tests;
@@ -113,7 +114,8 @@ public sealed class PullRequestReportServiceTests
             builder,
             cache ?? new MemoryCache(new MemoryCacheOptions()),
             options,
-            new PullRequestReportCoalescer());
+            new PullRequestReportCoalescer(),
+            NullLogger<PullRequestReportService>.Instance);
     }
 
     private sealed class FakeGitHubGraphQlClient : IGitHubGraphQlClient

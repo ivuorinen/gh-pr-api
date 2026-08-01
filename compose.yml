@@ -1,16 +1,21 @@
 services:
   gh-pr-api:
-    image: ghcr.io/ivuorinen/gh-pr-api:latest
+    image: ghcr.io/ivuorinen/gh-pr-api:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
+    # No host port publish: Coolify's reverse proxy reaches the container on the service
+    # network and terminates TLS there. Publishing "8080:8080" collided with an
+    # already-allocated 0.0.0.0:8080 on the deploy host and served the API in cleartext
+    # outside the proxy. For host access during local development, use the `docker run -p`
+    # flow in README.md instead.
+    expose:
+      - "8080"
     environment:
       ASPNETCORE_URLS: "http://+:8080"
-      GitHub__Owner: "ivuorinen"
+      GitHub__Owner: "${GITHUB_OWNER:-ivuorinen}"
       GitHub__Token: "${GITHUB_TOKEN}"
-      GitHub__CacheTtlSeconds: "300"
-      GitHub__RepositoryLimit: "1000"
-      GitHub__PullRequestLimitPerRepository: "100"
-      GitHub__StatusCheckLimitPerPullRequest: "100"
+      GitHub__CacheTtlSeconds: "${GITHUB_CACHE_TTL_SECONDS:-300}"
+      GitHub__RepositoryLimit: "${GITHUB_REPOSITORY_LIMIT:-1000}"
+      GitHub__PullRequestLimitPerRepository: "${GITHUB_PR_LIMIT_PER_REPO:-100}"
+      GitHub__StatusCheckLimitPerPullRequest: "${GITHUB_STATUS_CHECK_LIMIT:-100}"

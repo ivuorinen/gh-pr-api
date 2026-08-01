@@ -12,7 +12,8 @@ public sealed class HtmlReportFormatter
           h1 { font-size: 1.4rem; }
           h2 { font-size: 1.15rem; margin-top: 1.75rem; }
           h3 { font-size: 1rem; color: #555; margin-top: 1rem; }
-          table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
+          .table-wrap { overflow-x: auto; margin-top: 0.5rem; }
+          table { border-collapse: collapse; width: 100%; }
           th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
           th { color: #555; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.02em; }
           .prefixes { font-weight: 600; color: #b3261e; white-space: nowrap; }
@@ -81,6 +82,7 @@ public sealed class HtmlReportFormatter
     private static void AppendHead(StringBuilder builder, string title)
     {
         builder.Append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+        builder.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
         builder.Append("<title>").Append(title).Append("</title>\n");
         builder.Append(Style).Append('\n');
         builder.Append("</head>\n<body>\n");
@@ -90,7 +92,7 @@ public sealed class HtmlReportFormatter
 
     private static void AppendTable(StringBuilder builder, IReadOnlyList<PullRequestItem> pullRequests)
     {
-        builder.Append("<table>\n<thead>\n<tr>");
+        builder.Append("<div class=\"table-wrap\">\n<table>\n<thead>\n<tr>");
         foreach (var header in TableHeaders)
         {
             builder.Append("<th scope=\"col\">").Append(header).Append("</th>");
@@ -112,7 +114,7 @@ public sealed class HtmlReportFormatter
             builder.Append("</tr>\n");
         }
 
-        builder.Append("</tbody>\n</table>\n");
+        builder.Append("</tbody>\n</table>\n</div>\n");
     }
 
     private static string Encode(string value) => WebUtility.HtmlEncode(value);

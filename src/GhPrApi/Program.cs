@@ -83,7 +83,7 @@ app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")))
 
 app.MapGet("/health/ready", GetReadiness)
     .WithName("Readiness")
-    .WithSummary("Returns readiness based on required configuration and last known GitHub reachability.");
+    .WithSummary("Returns readiness based on required configuration. Reports last known GitHub reachability without gating on it.");
 
 app.MapGet("/api/github/open-pull-requests", GetOpenPullRequestsAsync)
     .WithName("GetOpenPullRequests")
@@ -100,6 +100,7 @@ app.MapGet("/api/github/open-pull-requests.json", GetOpenPullRequestsJsonAsync)
     .WithName("GetOpenPullRequestsJson")
     .WithSummary("Same as GET /api/github/open-pull-requests, always as JSON regardless of ?format=.")
     .Produces<PullRequestReport>()
+    .ProducesProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status429TooManyRequests)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
     .RequireRateLimiting(RateLimiterPolicies.GitHubApi);
@@ -108,6 +109,7 @@ app.MapGet("/api/github/open-pull-requests.html", GetOpenPullRequestsHtmlAsync)
     .WithName("GetOpenPullRequestsHtml")
     .WithSummary("Same as GET /api/github/open-pull-requests, rendered as an HTML page, regardless of ?format=.")
     .Produces<string>(StatusCodes.Status200OK, "text/html")
+    .ProducesProblem(StatusCodes.Status400BadRequest)
     .ProducesProblem(StatusCodes.Status429TooManyRequests)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
     .RequireRateLimiting(RateLimiterPolicies.GitHubApi);
@@ -123,14 +125,11 @@ static IResult GetReadiness(IOptionsMonitor<GitHubOptions> options, GitHubApiHea
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 
-    if (!healthState.IsHealthy)
-    {
-        return Results.Problem(
-            title: "GitHub is not reachable.",
-            statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
-
-    return Results.Ok(new HealthResponse("ready"));
+    // GitHub reachability is reported, never gated on. Gating deadlocks: only a served
+    // request can clear the flag, and an orchestrator honouring a 503 stops sending them,
+    // so one transient upstream blip took this instance out of rotation permanently.
+    // An outage already surfaces to callers as 503 "Unable to query GitHub." -- the right layer.
+    return Results.Ok(new HealthResponse("ready", healthState.IsHealthy));
 }
 
 static async Task<IResult> GetOpenPullRequestsAsync(
@@ -140,6 +139,7 @@ static async Task<IResult> GetOpenPullRequestsAsync(
     IPullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
+    IOptionsMonitor<GitHubOptions> gitHubOptions,
     CancellationToken cancellationToken)
 {
     var responseFormat = ParseFormat(format);
@@ -151,7 +151,7 @@ static async Task<IResult> GetOpenPullRequestsAsync(
             statusCode: StatusCodes.Status400BadRequest);
     }
 
-    return await RenderReportAsync(responseFormat.Value, owner, refresh == true, reports, markdown, html, cancellationToken).ConfigureAwait(false);
+    return await RenderReportAsync(responseFormat.Value, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken).ConfigureAwait(false);
 }
 
 static Task<IResult> GetOpenPullRequestsJsonAsync(
@@ -160,8 +160,9 @@ static Task<IResult> GetOpenPullRequestsJsonAsync(
     IPullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
+    IOptionsMonitor<GitHubOptions> gitHubOptions,
     CancellationToken cancellationToken) =>
-    RenderReportAsync(ResponseFormat.Json, owner, refresh == true, reports, markdown, html, cancellationToken);
+    RenderReportAsync(ResponseFormat.Json, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken);
 
 static Task<IResult> GetOpenPullRequestsHtmlAsync(
     string? owner,
@@ -169,8 +170,9 @@ static Task<IResult> GetOpenPullRequestsHtmlAsync(
     IPullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
+    IOptionsMonitor<GitHubOptions> gitHubOptions,
     CancellationToken cancellationToken) =>
-    RenderReportAsync(ResponseFormat.Html, owner, refresh == true, reports, markdown, html, cancellationToken);
+    RenderReportAsync(ResponseFormat.Html, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken);
 
 static ResponseFormat? ParseFormat(string? format)
 {
@@ -195,8 +197,24 @@ static async Task<IResult> RenderReportAsync(
     IPullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
+    IOptionsMonitor<GitHubOptions> gitHubOptions,
     CancellationToken cancellationToken)
 {
+    // The upstream token belongs to the operator, and this endpoint is unauthenticated.
+    // An unconstrained ?owner= let any caller point that token at an arbitrary account and,
+    // with ?refresh=true, force a full uncached scan of it -- draining the token's quota.
+    // Restricting the override to the configured owner also makes the report coalescer
+    // effective again: one owner means one cache key means one in-flight fetch.
+    var configuredOwner = gitHubOptions.CurrentValue.Owner;
+    if (!string.IsNullOrWhiteSpace(owner)
+        && !owner.Trim().Equals(configuredOwner, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Problem(
+            title: "Unsupported owner.",
+            detail: $"This instance only serves '{configuredOwner}'. Omit ?owner= or set it to that value.",
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
     try
     {
         var report = await reports.GetOpenPullRequestsAsync(owner, refresh, cancellationToken).ConfigureAwait(false);
@@ -231,4 +249,4 @@ internal static class RateLimiterPolicies
     public const string GitHubApi = "github-api";
 }
 
-public sealed record HealthResponse(string Status);
+public sealed record HealthResponse(string Status, bool? GitHubReachable = null);

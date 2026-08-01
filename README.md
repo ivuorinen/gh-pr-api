@@ -67,7 +67,7 @@ Query parameters:
 
 | Name | Required | Description |
 |---|---:|---|
-| `owner` | no | Overrides configured `GitHub:Owner`. |
+| `owner` | no | Must match the configured `GitHub:Owner` (case-insensitive). Any other value returns `400 Unsupported owner.` The endpoint is unauthenticated and spends the operator's GitHub token, so it will not scan an arbitrary account on request. |
 | `refresh` | no | If `true`, bypasses the current in-memory cache. |
 | `format` | no | `json`, `markdown`, `md`, or `html`. Defaults to `json`. |
 
@@ -78,7 +78,7 @@ Two format-fixed variants of the same endpoint are also available, ignoring `?fo
 
 All three accept the same `owner`/`refresh` query parameters.
 
-The endpoint is rate-limited (10 requests/minute per fixed window); a caller over the limit gets `429 Too Many Requests`. This mainly protects `refresh=true`, which bypasses the cache and re-queries GitHub in full.
+The endpoint is rate-limited to 10 requests per minute (fixed window). The limit is **process-global and shared by all callers**, not per client — it exists to cap total load on the single upstream GitHub token, so one busy caller can exhaust the window for everyone. A caller over the limit gets `429 Too Many Requests`. This mainly protects `refresh=true`, which bypasses the cache and re-queries GitHub in full.
 
 Calls to the GitHub GraphQL API automatically retry transient failures (5xx, timeouts) with exponential backoff, up to a 70s total budget per call; a sustained GitHub outage still surfaces as `503 Unable to query GitHub.` once that budget is exhausted.
 
@@ -167,7 +167,13 @@ Returns process liveness.
 
 ### `GET /health/ready`
 
-Returns readiness. This validates that a GitHub token is configured and that the last GitHub API call (if any) succeeded; it does not proactively call GitHub.
+Returns readiness. This validates that a GitHub token is configured; it does not proactively call GitHub.
+
+GitHub reachability is **reported, not gated on**: the response body carries `gitHubReachable` reflecting whether the last GitHub API call (if any) succeeded, but an unreachable GitHub still returns `200 ready`. Gating on it deadlocks — only a served request can clear the flag, so an orchestrator that pulls the container out of rotation on a 503 removes the only thing that could restore it. A GitHub outage surfaces to callers as `503 Unable to query GitHub.` on the report endpoints, which is the correct layer for it.
+
+```json
+{ "status": "ready", "gitHubReachable": true }
+```
 
 ### `GET /openapi/v1.json`
 
@@ -240,6 +246,26 @@ Set `GITHUB_TOKEN` in `.env`, then run:
 ```bash
 docker compose up --build
 ```
+
+`compose.yml` deliberately does **not** publish a host port — it declares `expose: 8080` so a
+reverse proxy (Coolify's, in the deployment above) reaches the container on the service network
+and terminates TLS there. Publishing `8080:8080` collides with anything else already bound to
+the host's port 8080, including the previous revision during a redeploy, and serves the API in
+cleartext outside the proxy.
+
+For host access during local development, use the `docker run -p 8080:8080` flow above, or add
+an untracked `compose.override.yml`:
+
+```yaml
+services:
+  gh-pr-api:
+    ports:
+      - "8080:8080"
+```
+
+Every setting in `compose.yml` is overridable from `.env` — see `.env.example` for the full list
+(`GITHUB_OWNER`, `GITHUB_CACHE_TTL_SECONDS`, `IMAGE_TAG`, …). Defaults match the in-code defaults,
+so an empty `.env` beyond `GITHUB_TOKEN` behaves exactly as documented.
 
 ## GitHub Container Registry
 

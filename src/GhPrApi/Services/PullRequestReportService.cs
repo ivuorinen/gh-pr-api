@@ -15,19 +15,22 @@ public sealed class PullRequestReportService : IPullRequestReportService
     private readonly IMemoryCache _cache;
     private readonly IOptionsMonitor<GitHubOptions> _options;
     private readonly PullRequestReportCoalescer _coalescer;
+    private readonly ILogger<PullRequestReportService> _logger;
 
     public PullRequestReportService(
         IGitHubGraphQlClient gitHub,
         PullRequestReportBuilder builder,
         IMemoryCache cache,
         IOptionsMonitor<GitHubOptions> options,
-        PullRequestReportCoalescer coalescer)
+        PullRequestReportCoalescer coalescer,
+        ILogger<PullRequestReportService> logger)
     {
         _gitHub = gitHub;
         _builder = builder;
         _cache = cache;
         _options = options;
         _coalescer = coalescer;
+        _logger = logger;
     }
 
     public Task<PullRequestReport> GetOpenPullRequestsAsync(
@@ -71,6 +74,14 @@ public sealed class PullRequestReportService : IPullRequestReportService
             }).ConfigureAwait(false);
 
         var report = _builder.Build(owner, enrichedPullRequests, result.Truncated);
+
+        // Cache-miss volume is the only number that predicts GitHub quota consumption, and
+        // it was previously invisible -- an exhausted token looked identical to a GitHub outage.
+        _logger.LogInformation(
+            "Fetched open pull requests for {Owner}: {PullRequestCount} PRs, truncated={Truncated}",
+            owner,
+            result.PullRequests.Count,
+            result.Truncated);
 
         var currentOptions = _options.CurrentValue;
         if (currentOptions.CacheTtlSeconds > 0)

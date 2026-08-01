@@ -6,6 +6,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Top-level statements generate an internal Program class; the endpoint tests need it
+         to build a WebApplicationFactory<Program> host. -->
+    <InternalsVisibleTo Include="GhPrApi.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
     <!-- Microsoft.AspNetCore.OpenApi 10.0.0 transitively pulls Microsoft.OpenApi 2.0.0, which is

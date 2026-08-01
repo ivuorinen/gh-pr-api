@@ -1,16 +1,30 @@
 version: 2
 updates:
+  # cooldown delays routine version bumps so the ecosystem has time to yank a compromised
+  # release before a PR is ever opened. Security advisories are exempt and still open at once.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore"
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore"
 
   - package-ecosystem: "nuget"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore"
