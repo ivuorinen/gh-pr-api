@@ -8,6 +8,25 @@ namespace GhPrApi.Tests;
 public sealed class HtmlReportFormatterTests
 {
     [Fact]
+    public void Format_notes_a_degraded_report()
+    {
+        var formatter = new HtmlReportFormatter();
+        var report = new PullRequestReport(
+            "ivuorinen",
+            new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero),
+            TotalCount: 0,
+            Groups: [],
+            Message: "No open PRs.",
+            Truncated: false,
+            Degraded: true,
+            Unresolved: ["ivuorinen/example#1"]);
+
+        var html = formatter.Format(report);
+
+        Assert.Contains("Some pull requests could not be checked", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Format_returns_no_open_prs_paragraph_when_empty()
     {
         var formatter = new HtmlReportFormatter();

@@ -8,6 +8,52 @@ namespace GhPrApi.Tests;
 public sealed class PullRequestReportBuilderTests
 {
     [Fact]
+    public void Build_marks_an_unresolved_pull_request_as_unknown_ci()
+    {
+        var builder = TestSupport.CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero));
+        var pullRequest = TestPullRequests.Create(number: 1) with { StatusUnresolved = true };
+
+        var report = builder.Build("ivuorinen", [pullRequest], false, ["ivuorinen/example#1"]);
+
+        var item = report.Groups.SelectMany(static g => g.PullRequests ?? []).Single();
+        Assert.Equal(NormalizedValues.Ci.Unknown, item.Ci);
+        Assert.True(report.Degraded);
+        Assert.Equal(["ivuorinen/example#1"], report.Unresolved);
+    }
+
+    [Fact]
+    public void Build_is_not_degraded_when_nothing_is_unresolved()
+    {
+        var builder = TestSupport.CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero));
+
+        var report = builder.Build("ivuorinen", [TestPullRequests.Create(number: 1)]);
+
+        Assert.False(report.Degraded);
+        Assert.Null(report.Unresolved);
+    }
+
+    [Fact]
+    public void Unknown_ci_does_not_get_promoted_above_failing_or_stale()
+    {
+        var builder = TestSupport.CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero));
+        var unresolved = TestPullRequests.Create(number: 1) with { StatusUnresolved = true };
+        var failing = TestPullRequests.Create(number: 2) with
+        {
+            StatusDetails = new GitHubPullRequestStatusDetails(
+                [new GitHubStatusCheck("CheckRun", "build", "COMPLETED", "FAILURE", null, true)],
+                [],
+                RequiresStatusChecks: true),
+        };
+
+        var report = builder.Build("ivuorinen", [unresolved, failing]);
+
+        var items = report.Groups.SelectMany(static g => g.PullRequests ?? []).ToArray();
+        Assert.Equal(2, items[0].Number);
+        Assert.Equal(NormalizedValues.Ci.Failing, items[0].Ci);
+        Assert.Equal(NormalizedValues.Ci.Unknown, items[1].Ci);
+    }
+
+    [Fact]
     public void Build_returns_no_open_prs_message_when_empty()
     {
         var builder = CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero));

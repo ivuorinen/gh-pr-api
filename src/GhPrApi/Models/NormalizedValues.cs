@@ -14,6 +14,10 @@ public static class NormalizedValues
         public const string Passing = "passing";
         public const string Failing = "failing";
         public const string Pending = "pending";
+
+        // The status lookup for this pull request failed. Distinct from Pending, which means
+        // GitHub told us checks are still running.
+        public const string Unknown = "unknown";
     }
 
     public static class Branch
