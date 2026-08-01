@@ -275,7 +275,7 @@ public sealed class EndpointTests
         public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken) =>
             Task.FromResult(new GitHubPullRequestStatusDetails(
                 [],
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                [],
                 RequiresStatusChecks: false));
     }
 }

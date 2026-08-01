@@ -85,7 +85,7 @@ public sealed class PullRequestReportServiceTests
             OpenPullRequestsFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult([pr1, pr2], false)),
             StatusDetailsFactory = pr => new GitHubPullRequestStatusDetails(
                 [],
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                [],
                 RequiresStatusChecks: pr.Number == 1),
         };
         var service = CreateService(gitHub);
@@ -126,7 +126,7 @@ public sealed class PullRequestReportServiceTests
             static (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult([], false));
 
         public Func<GitHubPullRequest, GitHubPullRequestStatusDetails> StatusDetailsFactory { get; init; } =
-            static _ => new GitHubPullRequestStatusDetails([], new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
+            static _ => new GitHubPullRequestStatusDetails([], [], false);
 
         public int OpenPullRequestsCallCount => _openPullRequestsCallCount;
 

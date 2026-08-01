@@ -65,7 +65,7 @@ public sealed class PullRequestReportBuilderTests
         var builder = CreateBuilder(now);
         var statusDetails = new GitHubPullRequestStatusDetails(
             [new GitHubStatusCheck("CheckRun", "build", "COMPLETED", "FAILURE", State: null, IsRequired: true)],
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "build" },
+            ["build"],
             RequiresStatusChecks: true);
         var pullRequest = TestPullRequests.Create(
             title: "fix CVE-2026-12345",

@@ -59,6 +59,7 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
                     mergeStateStatus
                     mergeable
                     headRefName
+                    headRefOid
                     baseRefName
                     author {
                       login
@@ -261,7 +262,9 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
 
         return new GitHubPullRequestStatusDetails(
             checks,
-            requiredNames,
+            // The HashSet above de-duplicates case-insensitively; the array keeps that result
+            // while staying serializable, which IReadOnlySet is not under System.Text.Json.
+            requiredNames.ToArray(),
             branchProtectionRule?.RequiresStatusChecks == true);
     }
 
@@ -350,6 +353,7 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
             pullRequest.MergeStateStatus,
             pullRequest.Mergeable,
             pullRequest.HeadRefName,
+            pullRequest.HeadRefOid,
             pullRequest.BaseRefName,
             pullRequest.Author is null
                 ? null
@@ -399,6 +403,7 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
         string? MergeStateStatus,
         string? Mergeable,
         string HeadRefName,
+        string HeadRefOid,
         string BaseRefName,
         ActorNode? Author,
         LabelConnection? Labels);

@@ -30,7 +30,7 @@ public sealed class MarkdownReportFormatterTests
         var builder = CreateBuilder(now);
         var statusDetails = new GitHubPullRequestStatusDetails(
             [new GitHubStatusCheck("CheckRun", "build", "COMPLETED", "FAILURE", State: null, IsRequired: true)],
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "build" },
+            ["build"],
             RequiresStatusChecks: true);
         var pullRequests = new[]
         {
