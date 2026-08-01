@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:ed034a8bf0b24ded0cbbac07e17825d8e9ebfe21e308191d0f7421eaf5ad4664 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 AS build
 WORKDIR /src
 
 COPY Directory.Build.props ./
@@ -12,7 +12,7 @@ RUN dotnet restore src/GhPrApi/GhPrApi.csproj --locked-mode
 COPY src/GhPrApi src/GhPrApi
 RUN dotnet publish src/GhPrApi/GhPrApi.csproj -c Release -o /app/publish /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:1fa23fc4872d95fd71c2833ebe65d7e84a43b2d51a31d119516852f13d9505a7 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b AS runtime
 WORKDIR /app
 
 # The aspnet runtime image ships no HTTP client (no curl/wget/nc), so HEALTHCHECK needs one.
@@ -23,6 +23,17 @@ WORKDIR /app
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
+
+# The image runs as uid 1654 (app) and a freshly mounted volume is root-owned, so create and
+# chown the cache mount point before dropping privileges. Miss this and the app silently falls
+# back to the in-memory tier only.
+RUN mkdir -p /data && chown app:app /data
+VOLUME ["/data"]
+
+# Point the cache at the volume by default. The code default is a relative "cache.db", which
+# resolves under the read-only /app and would silently drop the image to the in-memory tier for
+# anyone running the image without setting this.
+ENV GitHub__CachePath=/data/cache.db
 
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080

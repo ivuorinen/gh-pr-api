@@ -15,4 +15,8 @@ public sealed class GitHubOptions
     public int PullRequestLimitPerRepository { get; set; } = 100;
 
     public int StatusCheckLimitPerPullRequest { get; set; } = 100;
+
+    public string CachePath { get; set; } = "cache.db";
+
+    public int StatusCacheTtlSeconds { get; set; } = 30;
 }

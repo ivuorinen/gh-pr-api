@@ -2,7 +2,8 @@ using GhPrApi.GitHub;
 using GhPrApi.Models;
 using GhPrApi.Options;
 using GhPrApi.Services;
-using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -11,54 +12,37 @@ namespace GhPrApi.Tests;
 public sealed class PullRequestReportServiceTests
 {
     [Fact]
-    public async Task GetOpenPullRequestsAsync_returns_cached_report_without_calling_github()
+    public async Task Second_call_inside_the_ttl_does_not_call_github_again()
     {
-        using var cache = new MemoryCache(new MemoryCacheOptions());
-        var cachedReport = new PullRequestReport("ivuorinen", DateTimeOffset.UtcNow, 0, [], "No open PRs.");
-        cache.Set("github-open-pull-requests:ivuorinen", cachedReport, TimeSpan.FromMinutes(5));
         var gitHub = new FakeGitHubGraphQlClient();
-        var service = CreateService(gitHub, cache);
-
-        var report = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
-
-        Assert.Same(cachedReport, report);
-        Assert.Equal(0, gitHub.OpenPullRequestsCallCount);
-    }
-
-    [Fact]
-    public async Task GetOpenPullRequestsAsync_fetches_and_caches_on_a_miss()
-    {
-        using var cache = new MemoryCache(new MemoryCacheOptions());
-        var gitHub = new FakeGitHubGraphQlClient();
-        var service = CreateService(gitHub, cache);
+        var service = CreateService(gitHub);
 
         var first = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
         var second = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
 
-        Assert.Equal(1, gitHub.OpenPullRequestsCallCount);
-        Assert.Same(first, second);
+        Assert.Equal(1, gitHub.ListingCallCount);
+        Assert.Equal(first.TotalCount, second.TotalCount);
     }
 
     [Fact]
-    public async Task GetOpenPullRequestsAsync_refresh_true_bypasses_the_cache()
+    public async Task Refresh_true_bypasses_both_tiers()
     {
-        using var cache = new MemoryCache(new MemoryCacheOptions());
         var gitHub = new FakeGitHubGraphQlClient();
-        var service = CreateService(gitHub, cache);
+        var service = CreateService(gitHub);
 
         await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
         await service.GetOpenPullRequestsAsync(null, refresh: true, CancellationToken.None);
 
-        Assert.Equal(2, gitHub.OpenPullRequestsCallCount);
+        Assert.Equal(2, gitHub.ListingCallCount);
     }
 
     [Fact]
-    public async Task GetOpenPullRequestsAsync_coalesces_concurrent_cache_misses_into_one_github_fetch()
+    public async Task Concurrent_misses_hit_github_once()
     {
         var gate = new TaskCompletionSource();
         var gitHub = new FakeGitHubGraphQlClient
         {
-            OpenPullRequestsFactory = async (_, _) =>
+            ListingFactory = async (_, _) =>
             {
                 await gate.Task;
                 return new GitHubOpenPullRequestsResult([], false);
@@ -69,74 +53,198 @@ public sealed class PullRequestReportServiceTests
         var first = service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
         var second = service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
         gate.SetResult();
-        var results = await Task.WhenAll(first, second);
+        await Task.WhenAll(first, second);
 
-        Assert.Equal(1, gitHub.OpenPullRequestsCallCount);
-        Assert.Same(results[0], results[1]);
+        Assert.Equal(1, gitHub.ListingCallCount);
     }
 
     [Fact]
-    public async Task GetOpenPullRequestsAsync_enriches_each_pull_request_with_its_own_status_details()
+    public async Task One_caller_cancelling_does_not_break_the_other()
     {
-        var pr1 = TestPullRequests.Create(number: 1);
-        var pr2 = TestPullRequests.Create(number: 2);
+        var gate = new TaskCompletionSource();
         var gitHub = new FakeGitHubGraphQlClient
         {
-            OpenPullRequestsFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult([pr1, pr2], false)),
-            StatusDetailsFactory = pr => new GitHubPullRequestStatusDetails(
-                [],
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
-                RequiresStatusChecks: pr.Number == 1),
+            ListingFactory = async (_, _) =>
+            {
+                await gate.Task;
+                return new GitHubOpenPullRequestsResult([], false);
+            },
+        };
+        var service = CreateService(gitHub);
+        using var cts = new CancellationTokenSource();
+
+        var cancelled = service.GetOpenPullRequestsAsync(null, refresh: false, cts.Token);
+        var survivor = service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
+        await cts.CancelAsync();
+        gate.SetResult();
+
+        var report = await survivor;
+        Assert.Equal(0, report.TotalCount);
+
+        // Observe the cancelled task so a faulted or cancelled result cannot surface later as
+        // an unobserved exception and make the suite flaky. Its outcome is deliberately not
+        // asserted; this test is about the survivor.
+        try
+        {
+            await cancelled;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    [Fact]
+    public async Task Cache_ttl_of_zero_disables_listing_caching_instead_of_throwing()
+    {
+        // CacheTtlSeconds is validated as >= 0 and 0 has always meant "do not cache". Handing
+        // TimeSpan.Zero to HybridCache throws ArgumentOutOfRangeException, so 0 must bypass it.
+        var gitHub = new FakeGitHubGraphQlClient();
+        var service = CreateService(gitHub, cacheTtlSeconds: 0);
+
+        await service.GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, gitHub.ListingCallCount);
+    }
+
+    [Fact]
+    public async Task Owner_casing_does_not_split_the_cache_entry()
+    {
+        // ?owner= is accepted case-insensitively, so a raw pass-through would mint one cache
+        // key per casing and double the GitHub quota usage.
+        var gitHub = new FakeGitHubGraphQlClient();
+        var service = CreateService(gitHub);
+
+        await service.GetOpenPullRequestsAsync("ivuorinen", refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync("IVUORINEN", refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync("  IvUoRiNeN  ", refresh: false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, gitHub.ListingCallCount);
+    }
+
+    [Fact]
+    public async Task Partial_status_failure_returns_a_degraded_report()
+    {
+        var gitHub = new FakeGitHubGraphQlClient
+        {
+            ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
+                [TestPullRequests.Create(number: 1), TestPullRequests.Create(number: 2)], false)),
+            FailingPullRequestNumbers = [2],
         };
         var service = CreateService(gitHub);
 
         var report = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
-        var items = report.Groups.SelectMany(static g => g.PullRequests ?? []).ToDictionary(static item => item.Number);
 
-        Assert.Equal(NormalizedValues.Ci.Pending, items[1].Ci);
-        Assert.Equal(NormalizedValues.Ci.Passing, items[2].Ci);
+        var items = report.Groups.SelectMany(static g => g.PullRequests ?? []).ToDictionary(static i => i.Number);
+        Assert.True(report.Degraded);
+        Assert.Equal(["ivuorinen/example#2"], report.Unresolved);
+        Assert.Equal(NormalizedValues.Ci.Unknown, items[2].Ci);
+        Assert.NotEqual(NormalizedValues.Ci.Unknown, items[1].Ci);
+    }
+
+    [Fact]
+    public async Task Retry_after_partial_failure_only_refetches_the_missing_prs()
+    {
+        // This is the whole point of the split: a blip must not discard the work that
+        // already succeeded.
+        var gitHub = new FakeGitHubGraphQlClient
+        {
+            ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
+                [
+                    TestPullRequests.Create(number: 1),
+                    TestPullRequests.Create(number: 2),
+                    TestPullRequests.Create(number: 3),
+                ], false)),
+            FailingPullRequestNumbers = [3],
+        };
+        var service = CreateService(gitHub);
+
+        var degraded = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
+        Assert.True(degraded.Degraded);
+        Assert.Equal(3, gitHub.StatusCallCount);
+
+        gitHub.FailingPullRequestNumbers = [];
+        var repaired = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
+
+        Assert.False(repaired.Degraded);
+        // 3 from the first attempt plus exactly 1 retry, not 3 more.
+        Assert.Equal(4, gitHub.StatusCallCount);
+    }
+
+    [Fact]
+    public async Task A_settled_status_survives_a_listing_refresh()
+    {
+        var gitHub = new FakeGitHubGraphQlClient
+        {
+            ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
+                [TestPullRequests.Create(number: 1)], false)),
+        };
+        var service = CreateService(gitHub);
+
+        await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
+        await service.GetOpenPullRequestsAsync(null, refresh: true, CancellationToken.None);
+
+        Assert.Equal(2, gitHub.ListingCallCount);
+        Assert.Equal(2, gitHub.StatusCallCount);
     }
 
     private static PullRequestReportService CreateService(
         FakeGitHubGraphQlClient gitHub,
-        IMemoryCache? cache = null,
         int cacheTtlSeconds = 300)
     {
-        var builder = TestSupport.CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero));
+        var services = new ServiceCollection();
+        services.AddHybridCache();
+        var provider = services.BuildServiceProvider();
+
         var options = new FakeOptionsMonitor<GitHubOptions>(new GitHubOptions
         {
             Owner = "ivuorinen",
             CacheTtlSeconds = cacheTtlSeconds,
+            StatusCacheTtlSeconds = 30,
         });
 
         return new PullRequestReportService(
             gitHub,
-            builder,
-            cache ?? new MemoryCache(new MemoryCacheOptions()),
+            TestSupport.CreateBuilder(new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero)),
+            provider.GetRequiredService<HybridCache>(),
+            new CiNormalizer(),
             options,
-            new PullRequestReportCoalescer(),
             NullLogger<PullRequestReportService>.Instance);
     }
 
     private sealed class FakeGitHubGraphQlClient : IGitHubGraphQlClient
     {
-        private int _openPullRequestsCallCount;
+        private int _listingCallCount;
+        private int _statusCallCount;
 
-        public Func<string, CancellationToken, Task<GitHubOpenPullRequestsResult>> OpenPullRequestsFactory { get; init; } =
+        public Func<string, CancellationToken, Task<GitHubOpenPullRequestsResult>> ListingFactory { get; init; } =
             static (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult([], false));
 
-        public Func<GitHubPullRequest, GitHubPullRequestStatusDetails> StatusDetailsFactory { get; init; } =
-            static _ => new GitHubPullRequestStatusDetails([], new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
+        public IReadOnlyCollection<int> FailingPullRequestNumbers { get; set; } = [];
 
-        public int OpenPullRequestsCallCount => _openPullRequestsCallCount;
+        public int ListingCallCount => _listingCallCount;
+
+        public int StatusCallCount => _statusCallCount;
 
         public Task<GitHubOpenPullRequestsResult> GetOpenPullRequestsAsync(string owner, CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref _openPullRequestsCallCount);
-            return OpenPullRequestsFactory(owner, cancellationToken);
+            Interlocked.Increment(ref _listingCallCount);
+            return ListingFactory(owner, cancellationToken);
         }
 
-        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken) =>
-            Task.FromResult(StatusDetailsFactory(pullRequest));
+        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(
+            GitHubPullRequest pullRequest,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _statusCallCount);
+
+            if (FailingPullRequestNumbers.Contains(pullRequest.Number))
+            {
+                return Task.FromException<GitHubPullRequestStatusDetails>(
+                    new GitHubQueryException("GitHub GraphQL query failed with HTTP 502."));
+            }
+
+            return Task.FromResult(new GitHubPullRequestStatusDetails([], [], RequiresStatusChecks: false));
+        }
     }
 }

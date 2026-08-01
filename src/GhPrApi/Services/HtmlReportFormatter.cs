@@ -35,6 +35,11 @@ public sealed class HtmlReportFormatter
             builder.Append("<p class=\"meta\">Results may be incomplete: a configured limit was reached.</p>\n");
         }
 
+        if (report.Degraded)
+        {
+            builder.Append("<p class=\"meta\">Some pull requests could not be checked; their CI shows as unknown.</p>\n");
+        }
+
         if (report.TotalCount == 0)
         {
             builder.Append("<p class=\"empty\">No open PRs.</p>\n");

@@ -31,8 +31,14 @@ public sealed class PullRequestReportBuilder
         _timeProvider = timeProvider;
     }
 
-    public PullRequestReport Build(string owner, IReadOnlyList<GitHubPullRequest> pullRequests, bool truncated = false)
+    public PullRequestReport Build(
+        string owner,
+        IReadOnlyList<GitHubPullRequest> pullRequests,
+        bool truncated = false,
+        IReadOnlyList<string>? unresolved = null)
     {
+        var degraded = unresolved is { Count: > 0 };
+        var unresolvedIds = degraded ? unresolved : null;
         var now = _timeProvider.GetUtcNow();
         var items = pullRequests
             .Select(pr => BuildItem(pr, now))
@@ -47,7 +53,9 @@ public sealed class PullRequestReportBuilder
                 TotalCount: 0,
                 Groups: [],
                 Message: "No open PRs.",
-                Truncated: truncated);
+                Truncated: truncated,
+                Degraded: degraded,
+                Unresolved: unresolvedIds);
         }
 
         var groups = new List<PullRequestGroup>();
@@ -98,7 +106,14 @@ public sealed class PullRequestReportBuilder
                 DependencyGroups: robotDependencyGroups));
         }
 
-        return new PullRequestReport(owner, now, items.Length, groups, Truncated: truncated);
+        return new PullRequestReport(
+            owner,
+            now,
+            items.Length,
+            groups,
+            Truncated: truncated,
+            Degraded: degraded,
+            Unresolved: unresolvedIds);
     }
 
     private PullRequestItem BuildItem(GitHubPullRequest pullRequest, DateTimeOffset now)
@@ -107,7 +122,12 @@ public sealed class PullRequestReportBuilder
         var dependency = _dependencyNameDetector.Detect(pullRequest, isRobot);
         var isSecurity = _securityDetector.IsSecurity(pullRequest, dependency.Name);
         var review = _reviewNormalizer.Normalize(pullRequest.ReviewDecision);
-        var ci = _ciNormalizer.Normalize(pullRequest.StatusDetails);
+        // An unresolved status is an absence of information, not a signal: it must not be
+        // reported as pending, and GetSortRank leaves it at the default rank rather than
+        // promoting it alongside failing.
+        var ci = pullRequest.StatusUnresolved
+            ? NormalizedValues.Ci.Unknown
+            : _ciNormalizer.Normalize(pullRequest.StatusDetails);
         var branch = _branchNormalizer.Normalize(pullRequest.Mergeable, pullRequest.MergeStateStatus);
         var age = now - pullRequest.CreatedAt;
         var ageDays = Math.Max(0, (int)Math.Floor(age.TotalDays));

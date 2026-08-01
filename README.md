@@ -28,7 +28,9 @@ Configuration keys:
 |---|---:|---|
 | `GitHub:Owner` | `ivuorinen` | GitHub user or organization login whose public repositories are scanned. |
 | `GitHub:Token` | empty | GitHub API token. Required. |
-| `GitHub:CacheTtlSeconds` | `300` | In-memory cache TTL for generated reports. |
+| `GitHub:CacheTtlSeconds` | `300` | TTL for the repository and pull-request listing. Per-PR check status has its own adaptive TTL. |
+| `GitHub:CachePath` | `cache.db` | SQLite file backing the durable cache tier. The container image sets this to `/data/cache.db`. |
+| `GitHub:StatusCacheTtlSeconds` | `30` | TTL for a pull request whose checks are still running. A failing verdict uses twice this; an all-green verdict is cached for 6 hours. |
 | `GitHub:RepositoryLimit` | `1000` | Maximum number of repositories to inspect. |
 | `GitHub:PullRequestLimitPerRepository` | `100` | Maximum open PRs read per repository. Mirrors the original prompt. |
 | `GitHub:StatusCheckLimitPerPullRequest` | `100` | Maximum status/check contexts read per pull request. |
@@ -133,7 +135,26 @@ Calls to the GitHub GraphQL API automatically retry transient failures (5xx, tim
 
 If no open PRs exist, the JSON response is HTTP 200 with `totalCount: 0`, an empty `groups` array, and `message: "No open PRs."`.
 
-If GitHub cannot be queried, JSON output returns HTTP 503 Problem Details with title `Unable to query GitHub.`.
+If GitHub cannot be queried at all, JSON output returns HTTP 503 Problem Details with title `Unable to query GitHub.`.
+
+### Partial results
+
+If the listing succeeds but the check status of some pull requests cannot be fetched, the response is still HTTP 200 and carries `"degraded": true` plus `"unresolved": ["ivuorinen/example#1"]`. Those pull requests report `"ci": "unknown"`, which is distinct from `pending` — it means the lookup failed, not that checks are running. `degraded` and `truncated` are independent and may both be true.
+
+### Caching
+
+Results are cached in two tiers rather than as one report:
+
+| Unit | Key | TTL |
+|---|---|---|
+| Repository and PR listing | per owner | `GitHub:CacheTtlSeconds` (300s) |
+| Per-PR check status | per PR **and head commit SHA** | adaptive, below |
+
+Because the status key includes the head commit SHA, a push invalidates it by itself. The TTL then depends on what the checks say: still running uses `GitHub:StatusCacheTtlSeconds` (30s), a failing verdict uses twice that (a re-run keeps the same SHA, and people only re-run red), and an all-green verdict is cached for 6 hours.
+
+The consequence is that a refresh only re-queries what can actually have changed, and a failure part-way through keeps everything that already succeeded — a retry fetches only the missing pieces instead of starting over.
+
+The second tier is a SQLite file at `GitHub:CachePath`, so cached work survives a restart or redeploy. If that path is not writable the service logs a warning once and runs with the in-memory tier only: a missing volume costs a cold start, never availability.
 
 ### Markdown response
 
@@ -221,10 +242,13 @@ Run locally:
 
 ```bash
 docker run --rm -p 8080:8080 \
+  -v gh-pr-api-cache:/data \
   -e GitHub__Owner=ivuorinen \
   -e GitHub__Token="$GitHub__Token" \
   gh-pr-api
 ```
+
+The `-v` is optional. Without it the durable cache tier lives inside the container and is lost when it exits; the service works either way.
 
 Call:
 
@@ -317,6 +341,10 @@ GitHub__CacheTtlSeconds=300
 GitHub__RepositoryLimit=1000
 GitHub__PullRequestLimitPerRepository=100
 GitHub__StatusCheckLimitPerPullRequest=100
+GitHub__CachePath=/data/cache.db
+GitHub__StatusCacheTtlSeconds=30
 ```
+
+Add a Coolify persistent volume mapped to `/data` so the cache survives redeploys. Without it the service still runs, logs one warning, and pays a full cold fetch after every deploy.
 
 If the GHCR package is private, configure Coolify with registry credentials. If the package is public, no registry credentials are required.

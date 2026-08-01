@@ -66,6 +66,7 @@ public sealed class GitHubGraphQlClientTests
                           "mergeStateStatus": "CLEAN",
                           "mergeable": "MERGEABLE",
                           "headRefName": "feature/example",
+                          "headRefOid": "abc123def456",
                           "baseRefName": "main",
                           "author": { "login": "ivuorinen", "__typename": "User" },
                           "labels": { "nodes": [] }
@@ -94,6 +95,29 @@ public sealed class GitHubGraphQlClientTests
         Assert.False(result.Truncated);
         Assert.True(healthState.IsHealthy);
         Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task GetOpenPullRequestsAsync_maps_the_head_commit_sha()
+    {
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse(SinglePageResponse));
+        var client = CreateClient(handler);
+
+        var result = await client.GetOpenPullRequestsAsync("ivuorinen", CancellationToken.None);
+
+        var pullRequest = Assert.Single(result.PullRequests);
+        Assert.Equal("abc123def456", pullRequest.HeadRefOid);
+    }
+
+    [Fact]
+    public void OpenPullRequestsQuery_requests_headRefOid()
+    {
+        var queryField = typeof(GitHubGraphQlClient).GetField(
+            "OpenPullRequestsQuery",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var query = Assert.IsType<string>(queryField?.GetValue(null));
+
+        Assert.Contains("headRefOid", query, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -202,6 +226,7 @@ public sealed class GitHubGraphQlClientTests
                           "mergeStateStatus": "CLEAN",
                           "mergeable": "MERGEABLE",
                           "headRefName": "feature/example",
+                          "headRefOid": "abc123def456",
                           "baseRefName": "main",
                           "author": { "login": "ivuorinen", "__typename": "User" },
                           "labels": { "nodes": [] }

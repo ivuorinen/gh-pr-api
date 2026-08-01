@@ -8,7 +8,11 @@ public sealed record PullRequestReport(
     int TotalCount,
     IReadOnlyList<PullRequestGroup> Groups,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Message = null,
-    bool Truncated = false);
+    // Truncated and Degraded are independent and may both be true: Truncated means a configured
+    // limit cut the data short, Degraded means some status lookups failed.
+    bool Truncated = false,
+    bool Degraded = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Unresolved = null);
 
 public sealed record PullRequestGroup(
     string Key,

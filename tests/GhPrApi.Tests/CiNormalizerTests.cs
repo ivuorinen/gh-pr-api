@@ -64,18 +64,17 @@ public sealed class CiNormalizerTests
                 CheckRun("optional", status: "COMPLETED", conclusion: "FAILURE", isRequired: false),
                 CheckRun("build", status: "COMPLETED", conclusion: "SUCCESS", isRequired: true),
             ],
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            [],
             RequiresStatusChecks: false);
 
         Assert.Equal(NormalizedValues.Ci.Passing, _normalizer.Normalize(details));
     }
 
     private static GitHubPullRequestStatusDetails Details(
-        IReadOnlySet<string> requiredNames,
+        IReadOnlyList<string> requiredNames,
         params GitHubStatusCheck[] checks) => new(checks, requiredNames, RequiresStatusChecks: requiredNames.Count > 0);
 
-    private static IReadOnlySet<string> Required(params string[] names) =>
-        new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyList<string> Required(params string[] names) => names;
 
     private static GitHubStatusCheck CheckRun(
         string name,

@@ -22,14 +22,19 @@ public sealed record GitHubPullRequest(
     string? MergeStateStatus,
     string? Mergeable,
     string HeadRefName,
+    string HeadRefOid,
     string BaseRefName,
     GitHubActor? Author,
     IReadOnlyList<string> Labels,
-    GitHubPullRequestStatusDetails? StatusDetails = null);
+    GitHubPullRequestStatusDetails? StatusDetails = null,
+    bool StatusUnresolved = false);
 
+// RequiredStatusCheckNames is a list, not a set: HybridCache's L2 serializes every cached
+// value and System.Text.Json cannot deserialize IReadOnlySet<T>. De-duplication still happens
+// in the HashSet inside GitHubGraphQlClient before the conversion.
 public sealed record GitHubPullRequestStatusDetails(
     IReadOnlyList<GitHubStatusCheck> StatusChecks,
-    IReadOnlySet<string> RequiredStatusCheckNames,
+    IReadOnlyList<string> RequiredStatusCheckNames,
     bool RequiresStatusChecks);
 
 public sealed record GitHubStatusCheck(

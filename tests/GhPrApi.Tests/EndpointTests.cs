@@ -31,7 +31,7 @@ public sealed class EndpointTests
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync(path);
+        var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(expectedMediaType, response.Content.Headers.ContentType?.MediaType);
@@ -46,7 +46,7 @@ public sealed class EndpointTests
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync($"/api/github/open-pull-requests?format={format}");
+        var response = await client.GetAsync($"/api/github/open-pull-requests?format={format}", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -57,8 +57,8 @@ public sealed class EndpointTests
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
 
-        var json = await client.GetAsync("/api/github/open-pull-requests.json?format=html");
-        var html = await client.GetAsync("/api/github/open-pull-requests.html?format=json");
+        var json = await client.GetAsync("/api/github/open-pull-requests.json?format=html", TestContext.Current.CancellationToken);
+        var html = await client.GetAsync("/api/github/open-pull-requests.html?format=json", TestContext.Current.CancellationToken);
 
         Assert.Equal("application/json", json.Content.Headers.ContentType?.MediaType);
         Assert.Equal("text/html", html.Content.Headers.ContentType?.MediaType);
@@ -71,8 +71,8 @@ public sealed class EndpointTests
         using var client = factory.CreateClient();
 
         // README.md documents ?owner=ivuorinen; it must keep working, case-insensitively.
-        var exact = await client.GetAsync("/api/github/open-pull-requests?owner=ivuorinen");
-        var mixedCase = await client.GetAsync("/api/github/open-pull-requests?owner=IVUORINEN");
+        var exact = await client.GetAsync("/api/github/open-pull-requests?owner=ivuorinen", TestContext.Current.CancellationToken);
+        var mixedCase = await client.GetAsync("/api/github/open-pull-requests?owner=IVUORINEN", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, exact.StatusCode);
         Assert.Equal(HttpStatusCode.OK, mixedCase.StatusCode);
@@ -90,7 +90,7 @@ public sealed class EndpointTests
         using var factory = CreateFactory(gitHub);
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync(path);
+        var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(0, gitHub.CallCount);
@@ -102,10 +102,10 @@ public sealed class EndpointTests
         using var factory = CreateFactory(new FakeGitHubGraphQlClient { Throws = true });
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/github/open-pull-requests");
+        var response = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        var problem = await response.Content.ReadFromJsonAsync<ProblemBody>();
+        var problem = await response.Content.ReadFromJsonAsync<ProblemBody>(TestContext.Current.CancellationToken);
         Assert.Equal("Unable to query GitHub.", problem?.Title);
     }
 
@@ -115,10 +115,10 @@ public sealed class EndpointTests
         using var factory = CreateFactory(new FakeGitHubGraphQlClient { Throws = true });
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/github/open-pull-requests?format=markdown");
+        var response = await client.GetAsync("/api/github/open-pull-requests?format=markdown", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Equal("Unable to query GitHub.", await response.Content.ReadAsStringAsync());
+        Assert.Equal("Unable to query GitHub.", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -127,8 +127,8 @@ public sealed class EndpointTests
         using var factory = CreateFactory(new FakeGitHubGraphQlClient { Throws = true });
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/github/open-pull-requests.html");
-        var body = await response.Content.ReadAsStringAsync();
+        var response = await client.GetAsync("/api/github/open-pull-requests.html", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
@@ -145,8 +145,8 @@ public sealed class EndpointTests
         using var factory = CreateFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/openapi/v1.json");
-        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var response = await client.GetAsync("/openapi/v1.json", TestContext.Current.CancellationToken);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var paths = document.GetProperty("paths");
@@ -164,12 +164,39 @@ public sealed class EndpointTests
     }
 
     [Fact]
+    public async Task Degraded_report_is_200_with_the_unresolved_list()
+    {
+        using var factory = CreateFactory(new FakeGitHubGraphQlClient { FailStatusForNumber = 1 });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(body.GetProperty("degraded").GetBoolean());
+        Assert.Equal("ivuorinen/example#1", body.GetProperty("unresolved")[0].GetString());
+    }
+
+    [Fact]
+    public async Task App_starts_and_serves_when_the_cache_path_is_unusable()
+    {
+        // Fail open: the durable cache is an optimisation, never a source of truth. An
+        // unmounted or unwritable volume must cost performance, not availability.
+        using var factory = CreateFactory(cachePath: "/proc/definitely-not-writable/cache.db");
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/live", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Liveness_is_ok_even_with_no_token_configured()
     {
         using var factory = CreateFactory(token: "");
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/health/live");
+        var response = await client.GetAsync("/health/live", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -180,7 +207,7 @@ public sealed class EndpointTests
         using var factory = CreateFactory(token: "");
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/health/ready");
+        var response = await client.GetAsync("/health/ready", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
@@ -195,8 +222,8 @@ public sealed class EndpointTests
         using var client = factory.CreateClient();
         factory.Services.GetRequiredService<GitHubApiHealthState>().RecordFailure();
 
-        var response = await client.GetAsync("/health/ready");
-        var body = await response.Content.ReadFromJsonAsync<HealthBody>();
+        var response = await client.GetAsync("/health/ready", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadFromJsonAsync<HealthBody>(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("ready", body?.Status);
@@ -211,11 +238,11 @@ public sealed class EndpointTests
 
         for (var i = 0; i < 10; i++)
         {
-            var permitted = await client.GetAsync("/api/github/open-pull-requests");
+            var permitted = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, permitted.StatusCode);
         }
 
-        var rejected = await client.GetAsync("/api/github/open-pull-requests");
+        var rejected = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
     }
@@ -228,14 +255,15 @@ public sealed class EndpointTests
 
         for (var i = 0; i < 12; i++)
         {
-            var response = await client.GetAsync("/health/live");
+            var response = await client.GetAsync("/health/live", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
     }
 
     private static WebApplicationFactory<Program> CreateFactory(
         FakeGitHubGraphQlClient? gitHub = null,
-        string token = "test-token") =>
+        string token = "test-token",
+        string? cachePath = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(
@@ -243,6 +271,8 @@ public sealed class EndpointTests
                 {
                     ["GitHub:Owner"] = "ivuorinen",
                     ["GitHub:Token"] = token,
+                    ["GitHub:CachePath"] = cachePath
+                        ?? Path.Combine(Path.GetTempPath(), $"ghpr-test-{Guid.NewGuid():N}.db"),
                 }));
             builder.ConfigureTestServices(services =>
             {
@@ -261,6 +291,8 @@ public sealed class EndpointTests
 
         public bool Throws { get; init; }
 
+        public int? FailStatusForNumber { get; init; }
+
         public int CallCount => _callCount;
 
         public Task<GitHubOpenPullRequestsResult> GetOpenPullRequestsAsync(string owner, CancellationToken cancellationToken)
@@ -272,10 +304,18 @@ public sealed class EndpointTests
                 : Task.FromResult(new GitHubOpenPullRequestsResult([TestPullRequests.Create(number: 1)], false));
         }
 
-        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubPullRequestStatusDetails(
+        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken)
+        {
+            if (FailStatusForNumber == pullRequest.Number)
+            {
+                return Task.FromException<GitHubPullRequestStatusDetails>(
+                    new GitHubQueryException("GitHub GraphQL query failed with HTTP 502."));
+            }
+
+            return Task.FromResult(new GitHubPullRequestStatusDetails(
                 [],
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                [],
                 RequiresStatusChecks: false));
+        }
     }
 }
