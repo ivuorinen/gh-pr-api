@@ -164,6 +164,20 @@ public sealed class EndpointTests
     }
 
     [Fact]
+    public async Task Degraded_report_is_200_with_the_unresolved_list()
+    {
+        using var factory = CreateFactory(new FakeGitHubGraphQlClient { FailStatusForNumber = 1 });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(body.GetProperty("degraded").GetBoolean());
+        Assert.Equal("ivuorinen/example#1", body.GetProperty("unresolved")[0].GetString());
+    }
+
+    [Fact]
     public async Task App_starts_and_serves_when_the_cache_path_is_unusable()
     {
         // Fail open: the durable cache is an optimisation, never a source of truth. An
@@ -277,6 +291,8 @@ public sealed class EndpointTests
 
         public bool Throws { get; init; }
 
+        public int? FailStatusForNumber { get; init; }
+
         public int CallCount => _callCount;
 
         public Task<GitHubOpenPullRequestsResult> GetOpenPullRequestsAsync(string owner, CancellationToken cancellationToken)
@@ -288,10 +304,18 @@ public sealed class EndpointTests
                 : Task.FromResult(new GitHubOpenPullRequestsResult([TestPullRequests.Create(number: 1)], false));
         }
 
-        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken) =>
-            Task.FromResult(new GitHubPullRequestStatusDetails(
+        public Task<GitHubPullRequestStatusDetails> GetPullRequestStatusDetailsAsync(GitHubPullRequest pullRequest, CancellationToken cancellationToken)
+        {
+            if (FailStatusForNumber == pullRequest.Number)
+            {
+                return Task.FromException<GitHubPullRequestStatusDetails>(
+                    new GitHubQueryException("GitHub GraphQL query failed with HTTP 502."));
+            }
+
+            return Task.FromResult(new GitHubPullRequestStatusDetails(
                 [],
                 [],
                 RequiresStatusChecks: false));
+        }
     }
 }

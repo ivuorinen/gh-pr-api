@@ -24,6 +24,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
+# The image runs as uid 1654 (app) and a freshly mounted volume is root-owned, so create and
+# chown the cache mount point before dropping privileges. Miss this and the app silently falls
+# back to the in-memory tier only.
+RUN mkdir -p /data && chown app:app /data
+VOLUME ["/data"]
+
+# Point the cache at the volume by default. The code default is a relative "cache.db", which
+# resolves under the read-only /app and would silently drop the image to the in-memory tier for
+# anyone running the image without setting this.
+ENV GitHub__CachePath=/data/cache.db
+
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 

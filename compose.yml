@@ -11,6 +11,10 @@ services:
     # flow in README.md instead.
     expose:
       - "8080"
+    # Durable cache tier. Without this the service still runs, in-memory only, and logs a
+    # warning; a redeploy then costs a full cold fetch.
+    volumes:
+      - gh-pr-api-cache:/data
     environment:
       ASPNETCORE_URLS: "http://+:8080"
       GitHub__Owner: "${GITHUB_OWNER:-ivuorinen}"
@@ -19,3 +23,8 @@ services:
       GitHub__RepositoryLimit: "${GITHUB_REPOSITORY_LIMIT:-1000}"
       GitHub__PullRequestLimitPerRepository: "${GITHUB_PR_LIMIT_PER_REPO:-100}"
       GitHub__StatusCheckLimitPerPullRequest: "${GITHUB_STATUS_CHECK_LIMIT:-100}"
+      GitHub__CachePath: "${GITHUB_CACHE_PATH:-/data/cache.db}"
+      GitHub__StatusCacheTtlSeconds: "${GITHUB_STATUS_CACHE_TTL_SECONDS:-30}"
+
+volumes:
+  gh-pr-api-cache:

@@ -1584,14 +1584,24 @@ docker run -d --name ghpr-cache-check -p 18097:8080 \
   -e GitHub__Owner=ivuorinen -e GitHub__Token=dummy \
   ghpr:cache-check
 sleep 8
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18097/health/live
+# Hit the REPORT endpoint, not /health/live. IDistributedCache is resolved lazily, so a
+# health check never touches the cache and /data stays empty whether or not it works.
+curl -s -o /dev/null "http://localhost:18097/api/github/open-pull-requests"
+sleep 2
 docker exec ghpr-cache-check ls -l /data
 docker logs ghpr-cache-check 2>&1 | grep -c "Durable cache unavailable"
+docker restart ghpr-cache-check && sleep 9
+docker exec ghpr-cache-check ls -l /data
 docker rm -f ghpr-cache-check && docker volume rm ghpr-cache-check
 ```
 
-Expected: `200`; `/data` contains `cache.db` owned by `app`; the warning count is `0`.
-A count of `1` means the chown in Step 4 did not take — fix it before continuing.
+Expected: `/data` contains `cache.db` owned by `app`, the warning count is `0`, and `cache.db`
+is still there after the restart.
+
+A count of `1` means the durable tier fell back to in-memory. Read the logged exception before
+assuming it is the chown: the path in the message tells you whether `GitHub:CachePath` even
+pointed at `/data`. The image sets `ENV GitHub__CachePath=/data/cache.db` precisely because the
+code default is a relative `cache.db` that resolves under the read-only `/app`.
 
 - [ ] **Step 7: Update the docs**
 
