@@ -178,6 +178,19 @@ public sealed class EndpointTests
     }
 
     [Fact]
+    public async Task Configured_owner_with_stray_whitespace_still_matches_the_owner_parameter()
+    {
+        // A GitHub__Owner env var with a trailing newline (a secrets file, a copy-paste) would
+        // otherwise fail the endpoint's owner check and mint a distinct cache key.
+        using var factory = CreateFactory(configuredOwner: "  ivuorinen\n");
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/github/open-pull-requests?owner=ivuorinen", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task App_starts_and_serves_when_the_cache_path_is_unusable()
     {
         // Fail open: the durable cache is an optimisation, never a source of truth. An
@@ -263,13 +276,14 @@ public sealed class EndpointTests
     private static WebApplicationFactory<Program> CreateFactory(
         FakeGitHubGraphQlClient? gitHub = null,
         string token = "test-token",
-        string? cachePath = null) =>
+        string? cachePath = null,
+        string configuredOwner = "ivuorinen") =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
-                    ["GitHub:Owner"] = "ivuorinen",
+                    ["GitHub:Owner"] = configuredOwner,
                     ["GitHub:Token"] = token,
                     ["GitHub:CachePath"] = cachePath
                         ?? Path.Combine(Path.GetTempPath(), $"ghpr-test-{Guid.NewGuid():N}.db"),
