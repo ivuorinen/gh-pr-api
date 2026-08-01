@@ -48,6 +48,6 @@
 
          The second is inside shipped AspNetCore.OpenApi IL, so no project-side change fixes
          it. Revisit only when this project moves to net11.0 with AspNetCore.OpenApi 11.x. -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="3.9.0" />
   </ItemGroup>
 </Project>
