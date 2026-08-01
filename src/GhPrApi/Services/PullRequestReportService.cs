@@ -41,22 +41,28 @@ public sealed class PullRequestReportService : IPullRequestReportService
         CancellationToken cancellationToken)
     {
         var options = _options.CurrentValue;
-        var owner = string.IsNullOrWhiteSpace(ownerOverride) ? options.Owner : ownerOverride.Trim();
+        var owner = ResolveOwner(ownerOverride, options.Owner);
         var flags = refresh
             ? HybridCacheEntryFlags.DisableLocalCacheRead | HybridCacheEntryFlags.DisableDistributedCacheRead
             : HybridCacheEntryFlags.None;
 
-        var listing = await _cache.GetOrCreateAsync(
-            $"listing:v1:{owner}",
-            (Client: _gitHub, Owner: owner),
-            static (state, token) => new ValueTask<GitHubOpenPullRequestsResult>(
-                state.Client.GetOpenPullRequestsAsync(state.Owner, token)),
-            new HybridCacheEntryOptions
-            {
-                Expiration = TimeSpan.FromSeconds(options.CacheTtlSeconds),
-                Flags = flags,
-            },
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        // CacheTtlSeconds is validated as >= 0, and 0 has always meant "do not cache the
+        // listing". HybridCache rejects a non-positive Expiration outright
+        // (ArgumentOutOfRangeException: "The relative expiration value must be positive"), so
+        // that case has to bypass the cache rather than be handed to it.
+        var listing = options.CacheTtlSeconds <= 0
+            ? await _gitHub.GetOpenPullRequestsAsync(owner, cancellationToken).ConfigureAwait(false)
+            : await _cache.GetOrCreateAsync(
+                $"listing:v1:{owner}",
+                (Client: _gitHub, Owner: owner),
+                static (state, token) => new ValueTask<GitHubOpenPullRequestsResult>(
+                    state.Client.GetOpenPullRequestsAsync(state.Owner, token)),
+                new HybridCacheEntryOptions
+                {
+                    Expiration = TimeSpan.FromSeconds(options.CacheTtlSeconds),
+                    Flags = flags,
+                },
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var enriched = new GitHubPullRequest[listing.PullRequests.Count];
         var unresolved = new ConcurrentBag<string>();
@@ -94,6 +100,24 @@ public sealed class PullRequestReportService : IPullRequestReportService
         // The assembled report is deliberately not cached: it is derived from the parts above,
         // and caching it would restore the all-or-nothing unit this split exists to remove.
         return _builder.Build(owner, enriched, listing.Truncated, unresolvedIds);
+    }
+
+    private static string ResolveOwner(string? ownerOverride, string configuredOwner)
+    {
+        if (string.IsNullOrWhiteSpace(ownerOverride))
+        {
+            return configuredOwner;
+        }
+
+        var owner = ownerOverride.Trim();
+
+        // The endpoint accepts ?owner= case-insensitively, and the owner is part of the cache
+        // key. Folding to the configured casing keeps ?owner=IVUORINEN and ?owner=ivuorinen on
+        // one entry; passing the raw value through would mint two and double the GitHub quota
+        // usage this split exists to reduce.
+        return owner.Equals(configuredOwner, StringComparison.OrdinalIgnoreCase)
+            ? configuredOwner
+            : owner;
     }
 
     private async Task<GitHubPullRequestStatusDetails> GetStatusDetailsAsync(

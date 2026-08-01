@@ -80,7 +80,46 @@ public sealed class PullRequestReportServiceTests
 
         var report = await survivor;
         Assert.Equal(0, report.TotalCount);
-        _ = cancelled;
+
+        // Observe the cancelled task so a faulted or cancelled result cannot surface later as
+        // an unobserved exception and make the suite flaky. Its outcome is deliberately not
+        // asserted; this test is about the survivor.
+        try
+        {
+            await cancelled;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    [Fact]
+    public async Task Cache_ttl_of_zero_disables_listing_caching_instead_of_throwing()
+    {
+        // CacheTtlSeconds is validated as >= 0 and 0 has always meant "do not cache". Handing
+        // TimeSpan.Zero to HybridCache throws ArgumentOutOfRangeException, so 0 must bypass it.
+        var gitHub = new FakeGitHubGraphQlClient();
+        var service = CreateService(gitHub, cacheTtlSeconds: 0);
+
+        await service.GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, gitHub.ListingCallCount);
+    }
+
+    [Fact]
+    public async Task Owner_casing_does_not_split_the_cache_entry()
+    {
+        // ?owner= is accepted case-insensitively, so a raw pass-through would mint one cache
+        // key per casing and double the GitHub quota usage.
+        var gitHub = new FakeGitHubGraphQlClient();
+        var service = CreateService(gitHub);
+
+        await service.GetOpenPullRequestsAsync("ivuorinen", refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync("IVUORINEN", refresh: false, TestContext.Current.CancellationToken);
+        await service.GetOpenPullRequestsAsync("  IvUoRiNeN  ", refresh: false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, gitHub.ListingCallCount);
     }
 
     [Fact]
@@ -149,7 +188,9 @@ public sealed class PullRequestReportServiceTests
         Assert.Equal(2, gitHub.StatusCallCount);
     }
 
-    private static PullRequestReportService CreateService(FakeGitHubGraphQlClient gitHub)
+    private static PullRequestReportService CreateService(
+        FakeGitHubGraphQlClient gitHub,
+        int cacheTtlSeconds = 300)
     {
         var services = new ServiceCollection();
         services.AddHybridCache();
@@ -158,7 +199,7 @@ public sealed class PullRequestReportServiceTests
         var options = new FakeOptionsMonitor<GitHubOptions>(new GitHubOptions
         {
             Owner = "ivuorinen",
-            CacheTtlSeconds = 300,
+            CacheTtlSeconds = cacheTtlSeconds,
             StatusCacheTtlSeconds = 30,
         });
 
