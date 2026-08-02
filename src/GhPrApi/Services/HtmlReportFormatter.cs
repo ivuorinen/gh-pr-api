@@ -13,6 +13,7 @@ public sealed class HtmlReportFormatter
           h2 { font-size: 1.15rem; margin-top: 1.75rem; }
           h3 { font-size: 1rem; color: #555; margin-top: 1rem; }
           .table-wrap { overflow-x: auto; margin-top: 0.5rem; }
+          .table-wrap:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
           table { border-collapse: collapse; width: 100%; }
           th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
           th { color: #555; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.02em; }
@@ -57,7 +58,7 @@ public sealed class HtmlReportFormatter
 
                 if (group.PullRequests is { Count: > 0 })
                 {
-                    AppendTable(builder, group.PullRequests);
+                    AppendTable(builder, group.PullRequests, group.Title);
                 }
 
                 if (group.DependencyGroups is { Count: > 0 })
@@ -65,7 +66,7 @@ public sealed class HtmlReportFormatter
                     foreach (var dependencyGroup in group.DependencyGroups.Where(static d => d.PullRequests.Count > 0))
                     {
                         builder.Append("<h3>").Append(Encode(dependencyGroup.DependencyName)).Append("</h3>\n");
-                        AppendTable(builder, dependencyGroup.PullRequests);
+                        AppendTable(builder, dependencyGroup.PullRequests, dependencyGroup.DependencyName);
                     }
                 }
             }
@@ -95,9 +96,15 @@ public sealed class HtmlReportFormatter
 
     private static void AppendFoot(StringBuilder builder) => builder.Append("</body>\n</html>\n");
 
-    private static void AppendTable(StringBuilder builder, IReadOnlyList<PullRequestItem> pullRequests)
+    private static void AppendTable(StringBuilder builder, IReadOnlyList<PullRequestItem> pullRequests, string label)
     {
-        builder.Append("<div class=\"table-wrap\">\n<table>\n<thead>\n<tr>");
+        // tabindex + role/aria-label, not a bare div: the only focusable content in a row is the
+        // PR link in column 2 of 7, so on a viewport narrow enough to trigger the overflow a
+        // keyboard user could never scroll to Review, CI or Branch -- WCAG 2.2 SC 2.1.1. The
+        // label distinguishes the several identical-looking tables on one page.
+        builder.Append("<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"")
+            .Append(Encode(label))
+            .Append("\">\n<table>\n<thead>\n<tr>");
         foreach (var header in TableHeaders)
         {
             builder.Append("<th scope=\"col\">").Append(header).Append("</th>");

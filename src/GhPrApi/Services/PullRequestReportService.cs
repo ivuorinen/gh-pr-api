@@ -8,9 +8,18 @@ using Microsoft.Extensions.Options;
 
 namespace GhPrApi.Services;
 
-public sealed class PullRequestReportService : IPullRequestReportService
+public sealed class PullRequestReportService
 {
     private const int MaxConcurrentStatusRequests = 8;
+
+    // The listing is capped and reports it via `truncated`; the work derived from it was not.
+    // MaxConcurrentStatusRequests throttles concurrency, not total, so at the default
+    // RepositoryLimit x PullRequestLimitPerRepository of 1000 x 100 a single inbound request
+    // could fan out to 100,000 upstream calls -- more than the token's hourly GraphQL budget,
+    // and hours of wall clock with no request timeout to cut it short.
+    // ponytail: a flat cap, well above any realistic open-PR count. Promote it to a
+    // GitHub:StatusRequestBudget option only if a deployment actually needs a different one.
+    private const int MaxStatusRequestsPerReport = 500;
 
     private readonly IGitHubGraphQlClient _gitHub;
     private readonly PullRequestReportBuilder _builder;
@@ -66,9 +75,18 @@ public sealed class PullRequestReportService : IPullRequestReportService
 
         var enriched = new GitHubPullRequest[listing.PullRequests.Count];
         var unresolved = new ConcurrentBag<string>();
+        var statusBudget = Math.Min(listing.PullRequests.Count, MaxStatusRequestsPerReport);
+
+        // Past the budget the pull request keeps its listing data and reports ci: unknown. That
+        // is `truncated`, not `degraded`: nothing failed, the work was simply not attempted, and
+        // the two flags mean different things to a caller.
+        for (var index = statusBudget; index < listing.PullRequests.Count; index++)
+        {
+            enriched[index] = listing.PullRequests[index] with { StatusUnresolved = true };
+        }
 
         await Parallel.ForEachAsync(
-            Enumerable.Range(0, listing.PullRequests.Count),
+            Enumerable.Range(0, statusBudget),
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = MaxConcurrentStatusRequests,
@@ -99,7 +117,9 @@ public sealed class PullRequestReportService : IPullRequestReportService
 
         // The assembled report is deliberately not cached: it is derived from the parts above,
         // and caching it would restore the all-or-nothing unit this split exists to remove.
-        return _builder.Build(owner, enriched, listing.Truncated, unresolvedIds);
+        var truncated = listing.Truncated || statusBudget < listing.PullRequests.Count;
+
+        return _builder.Build(owner, enriched, truncated, unresolvedIds);
     }
 
     private static string ResolveOwner(string? ownerOverride, string configuredOwner)

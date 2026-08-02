@@ -70,6 +70,39 @@ public sealed class CiNormalizerTests
         Assert.Equal(NormalizedValues.Ci.Passing, _normalizer.Normalize(details));
     }
 
+    [Fact]
+    public void Normalize_returns_failing_for_a_red_check_in_a_repository_with_no_branch_protection()
+    {
+        // Branch protection is off by default, so nothing is "required" and nothing blocks the
+        // merge -- but a red build is not passing, and the Easy wins section acts on this value.
+        var details = new GitHubPullRequestStatusDetails(
+            [CheckRun("build", status: "COMPLETED", conclusion: "FAILURE", isRequired: false)],
+            [],
+            RequiresStatusChecks: false);
+
+        Assert.Equal(NormalizedValues.Ci.Failing, _normalizer.Normalize(details));
+    }
+
+    [Fact]
+    public void Normalize_returns_passing_when_a_repository_has_no_checks_at_all()
+    {
+        // Nothing ran and nothing is required: there is genuinely nothing in the way.
+        var details = new GitHubPullRequestStatusDetails([], [], RequiresStatusChecks: false);
+
+        Assert.Equal(NormalizedValues.Ci.Passing, _normalizer.Normalize(details));
+    }
+
+    [Fact]
+    public void Normalize_returns_pending_for_an_unfinished_check_with_no_branch_protection()
+    {
+        var details = new GitHubPullRequestStatusDetails(
+            [CheckRun("build", status: "IN_PROGRESS", conclusion: null, isRequired: false)],
+            [],
+            RequiresStatusChecks: false);
+
+        Assert.Equal(NormalizedValues.Ci.Pending, _normalizer.Normalize(details));
+    }
+
     private static GitHubPullRequestStatusDetails Details(
         IReadOnlyList<string> requiredNames,
         params GitHubStatusCheck[] checks) => new(checks, requiredNames, RequiresStatusChecks: requiredNames.Count > 0);

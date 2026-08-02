@@ -172,7 +172,12 @@ public sealed class GitHubGraphQlClient : IGitHubGraphQlClient
             var repositories = response.RepositoryOwner?.Repositories;
             if (repositories is null)
             {
-                return new GitHubOpenPullRequestsResult(pullRequests, truncated);
+                // GitHub answers an unknown login with a null repositoryOwner, HTTP 200 and no
+                // errors array, so this is the only place a misspelled, renamed or deleted owner
+                // can be detected. Returning an empty result would make that misconfiguration
+                // byte-identical to a legitimate "no open PRs" -- permanently green, permanently
+                // empty, with nothing for an operator to notice.
+                throw new GitHubQueryException($"GitHub owner '{owner}' was not found.");
             }
 
             foreach (var repository in repositories.Nodes.Where(static node => node is not null).Cast<RepositoryNode>())

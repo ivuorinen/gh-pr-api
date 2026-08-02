@@ -1,7 +1,11 @@
+using System.Globalization;
+using GhPrApi.Caching;
 using GhPrApi.GitHub;
 using GhPrApi.Models;
 using GhPrApi.Options;
 using GhPrApi.Services;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -135,7 +139,12 @@ public sealed class PullRequestReportServiceTests
 
         var report = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
 
-        var items = report.Groups.SelectMany(static g => g.PullRequests ?? []).ToDictionary(static i => i.Number);
+        // DistinctBy because the "Easy wins" group is an overlay: a ready-to-merge PR is listed
+        // both there and in its normal group, so flattening Groups yields it twice.
+        var items = report.Groups
+            .SelectMany(static g => g.PullRequests ?? [])
+            .DistinctBy(static i => i.Number)
+            .ToDictionary(static i => i.Number);
         Assert.True(report.Degraded);
         Assert.Equal(["ivuorinen/example#2"], report.Unresolved);
         Assert.Equal(NormalizedValues.Ci.Unknown, items[2].Ci);
@@ -172,8 +181,12 @@ public sealed class PullRequestReportServiceTests
     }
 
     [Fact]
-    public async Task A_settled_status_survives_a_listing_refresh()
+    public async Task Refresh_bypasses_the_per_pr_status_cache_too()
     {
+        // ?refresh=true threads DisableLocalCacheRead|DisableDistributedCacheRead into the status
+        // cache as well as the listing, so even a settled six-hour entry is re-fetched. That is
+        // deliberate: refresh is the documented escape hatch for a CI re-run against an unchanged
+        // head commit, which the SHA-keyed cache key cannot see. Two status calls, not one.
         var gitHub = new FakeGitHubGraphQlClient
         {
             ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
@@ -188,11 +201,124 @@ public sealed class PullRequestReportServiceTests
         Assert.Equal(2, gitHub.StatusCallCount);
     }
 
+    [Fact]
+    public async Task Status_fan_out_is_capped_and_reported_as_truncated()
+    {
+        // The listing is capped and says so; the work derived from it was not. At the default
+        // 1000x100 limits one request could fan out to 100,000 upstream calls. Past the budget a
+        // PR keeps its listing data and reads ci: unknown -- truncated, not degraded, because
+        // nothing failed, the work was simply not attempted.
+        const int budget = 500;
+        var gitHub = new FakeGitHubGraphQlClient
+        {
+            ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
+                [.. Enumerable.Range(1, budget + 5).Select(number => TestPullRequests.Create(number: number))],
+                Truncated: false)),
+        };
+        var service = CreateService(gitHub);
+
+        var report = await service.GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(budget, gitHub.StatusCallCount);
+        Assert.True(report.Truncated);
+        Assert.False(report.Degraded);
+        Assert.Null(report.Unresolved);
+    }
+
+    [Fact]
+    public async Task A_cached_listing_survives_a_process_restart()
+    {
+        // L2 is the only reason the SQLite tier exists, and its serializer constrains the shape
+        // of every cached model (see the comment in GitHubModels.cs). A second provider over the
+        // same file is what a redeploy looks like: L1 empty, L2 warm. Without this the
+        // deserialize direction was never executed by any test.
+        var path = Path.Combine(Path.GetTempPath(), $"ghpr-l2-{Guid.NewGuid():N}.db");
+        var gitHub = new FakeGitHubGraphQlClient
+        {
+            ListingFactory = (_, _) => Task.FromResult(new GitHubOpenPullRequestsResult(
+                [TestPullRequests.Create(number: 1, labels: ["dependencies"])], Truncated: false)),
+        };
+
+        try
+        {
+            await CreateService(gitHub, cachePath: path)
+                .GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+
+            // HybridCache writes L2 on a background task, so the restart has to be sequenced
+            // after the listing entry actually lands, not merely after the call returns.
+            await WaitForDurableWriteAsync(path, "listing:v1:ivuorinen", TestContext.Current.CancellationToken);
+
+            var afterRestart = await CreateService(gitHub, cachePath: path)
+                .GetOpenPullRequestsAsync(null, refresh: false, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, gitHub.ListingCallCount);
+            Assert.Equal(1, afterRestart.TotalCount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var file in new[] { path, path + "-wal", path + "-shm" })
+            {
+                if (File.Exists(file))
+                {
+                    File.Delete(file);
+                }
+            }
+        }
+    }
+
+    /// <summary>Blocks until the durable cache holds a row for the given key fragment.</summary>
+    /// <remarks>
+    /// Waiting for *any* row is not enough: one report writes a listing entry and a status entry,
+    /// and whichever lands first would satisfy a bare count while the one under test is still in
+    /// flight. On timeout the keys that did arrive are reported, so a change to how HybridCache
+    /// names L2 entries fails with the reason rather than as a mystery.
+    /// </remarks>
+    private static async Task WaitForDurableWriteAsync(string path, string keyFragment, CancellationToken cancellationToken)
+    {
+        var seen = new List<string>();
+
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            seen.Clear();
+
+            await using (var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly"))
+            {
+                await connection.OpenAsync(cancellationToken);
+                await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT key FROM cache;";
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    seen.Add(reader.GetString(0));
+                }
+            }
+
+            if (seen.Any(key => key.Contains(keyFragment, StringComparison.Ordinal)))
+            {
+                return;
+            }
+
+            await Task.Delay(25, cancellationToken);
+        }
+
+        Assert.Fail($"No durable cache key containing '{keyFragment}' appeared. Keys seen: [{string.Join(", ", seen)}]");
+    }
+
     private static PullRequestReportService CreateService(
         FakeGitHubGraphQlClient gitHub,
-        int cacheTtlSeconds = 300)
+        int cacheTtlSeconds = 300,
+        string? cachePath = null)
     {
         var services = new ServiceCollection();
+
+        if (cachePath is not null)
+        {
+            services.AddSingleton<IDistributedCache>(
+                new SqliteDistributedCache(cachePath, TimeProvider.System));
+        }
+
         services.AddHybridCache();
         var provider = services.BuildServiceProvider();
 
