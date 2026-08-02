@@ -22,7 +22,13 @@
     <!-- Microsoft.Data.Sqlite 10.0.10 transitively pulls the SQLitePCLRaw 2.1.11 family, whose
          bundled SQLite is covered by GHSA-2m69-gcr7-jv3q (high). Pin the current 3.x family
          rather than the minimum that clears the advisory, so the native SQLite build stays
-         current. bundle pulls config, which pulls lib. -->
+         current. bundle pulls config, which pulls lib.
+
+         The core entry is redundant today: bundle already resolves core to exactly 3.0.5 via
+         bundle to config to provider to core, verified with a force-evaluate restore. It is
+         kept deliberately as a floor guard, so a future bundle release that lowers its
+         transitive floor on core cannot silently walk this back, which is the failure mode that
+         produced the advisory above in the first place. Not a missing cleanup. -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="10.8.0" />
