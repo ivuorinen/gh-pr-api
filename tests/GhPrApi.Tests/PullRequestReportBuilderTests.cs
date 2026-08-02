@@ -203,6 +203,25 @@ public sealed class PullRequestReportBuilderTests
     }
 
     [Fact]
+    public void Easy_wins_excludes_a_red_pull_request_in_an_unprotected_repository()
+    {
+        // Branch protection is off by default on new repositories, so nothing reports as
+        // "required". A failed build there must not read as passing and be recommended as ready
+        // to merge -- that is the whole promise of this section.
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = CreateBuilder(now);
+        var unprotectedAndRed = new GitHubPullRequestStatusDetails(
+            [new GitHubStatusCheck("CheckRun", "build", "COMPLETED", "FAILURE", State: null, IsRequired: false)],
+            [],
+            RequiresStatusChecks: false);
+
+        var report = builder.Build("ivuorinen", [TestPullRequests.Create(number: 1, statusDetails: unprotectedAndRed)]);
+
+        Assert.Equal(NormalizedValues.Ci.Failing, report.Groups.SelectMany(static g => g.PullRequests ?? []).Single().Ci);
+        Assert.DoesNotContain(report.Groups, static group => group.Key == NormalizedValues.Group.EasyWinsKey);
+    }
+
+    [Fact]
     public void Easy_wins_does_not_remove_the_pull_request_from_its_normal_group()
     {
         var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);

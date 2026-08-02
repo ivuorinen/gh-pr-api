@@ -1,3 +1,4 @@
+using System.Globalization;
 using GhPrApi.Caching;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Distributed;
@@ -125,11 +126,80 @@ public sealed class SqliteDistributedCacheTests : IDisposable
     }
 
     [Fact]
-    public void Constructor_throws_when_the_path_is_not_writable()
+    public void Constructor_throws_a_type_the_startup_fallback_catches()
     {
         var unwritable = Path.Combine(Path.GetTempPath(), $"ghpr-{Guid.NewGuid():N}", "nested", "cache.db");
 
-        Assert.ThrowsAny<Exception>(() => new SqliteDistributedCache(unwritable, new FakeTimeProvider()));
+        // Program.cs falls back to the in-memory tier on SqliteException, IOException and
+        // UnauthorizedAccessException only. Anything else escapes the DI factory and stops the
+        // process from starting, so the exception *type* is the contract here -- asserting
+        // merely that it throws would let that regression through.
+        var exception = Assert.ThrowsAny<Exception>(
+            () => new SqliteDistributedCache(unwritable, new FakeTimeProvider()));
+
+        Assert.True(
+            exception is SqliteException or IOException or UnauthorizedAccessException,
+            $"Program.cs's fallback filter does not catch {exception.GetType().Name}.");
+    }
+
+    [Fact]
+    public void A_deleted_database_file_is_recreated_rather_than_killing_the_tier()
+    {
+        // ReadWriteCreate silently remakes a deleted file, empty and table-less. Without schema
+        // repair every later call would fail into the fail-open catch and the durable tier would
+        // stay dead until the process restarted -- with no symptom but log noise.
+        var cache = Create(out _);
+        cache.Set("k", [1], Expires(TimeSpan.FromMinutes(5)));
+
+        SqliteConnection.ClearAllPools();
+        File.Delete(_path);
+
+        cache.Set("k", [2], Expires(TimeSpan.FromMinutes(5)));
+
+        Assert.Equal([2], cache.Get("k"));
+    }
+
+    [Fact]
+    public void The_schema_version_written_matches_the_one_checked()
+    {
+        // PRAGMA arguments cannot be parameterised, so the version appears twice: as the
+        // SchemaVersion constant the constructor compares against, and as a literal inside the
+        // DDL. Bumping one and not the other would make every start discard a file it had just
+        // written. This is what keeps the two honest.
+        _ = Create(out _);
+        SqliteConnection.ClearAllPools();
+
+        using var connection = new SqliteConnection($"Data Source={_path}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+
+        Assert.Equal(SqliteDistributedCache.SchemaVersion, Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public void A_file_from_a_different_schema_version_is_discarded_rather_than_reused()
+    {
+        // A cache file outlives the binary that wrote it (the image declares VOLUME ["/data"]),
+        // and CREATE TABLE IF NOT EXISTS would silently accept an incompatible older shape.
+        var cache = Create(out _);
+        cache.Set("k", [1], Expires(TimeSpan.FromMinutes(5)));
+        SqliteConnection.ClearAllPools();
+
+        using (var connection = new SqliteConnection($"Data Source={_path}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version = 999;";
+            command.ExecuteNonQuery();
+        }
+
+        SqliteConnection.ClearAllPools();
+        var rebuilt = new SqliteDistributedCache(_path, new FakeTimeProvider());
+
+        Assert.Null(rebuilt.Get("k"));
+        rebuilt.Set("k", [3], Expires(TimeSpan.FromMinutes(5)));
+        Assert.Equal([3], rebuilt.Get("k"));
     }
 
     private SqliteDistributedCache Create(out FakeTimeProvider time)

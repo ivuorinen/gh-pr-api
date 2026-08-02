@@ -5,6 +5,7 @@ using GhPrApi.GitHub;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -15,8 +16,10 @@ namespace GhPrApi.Tests;
 // Covers what the unit tests cannot: status codes, content types, error bodies, the format
 // aliases, owner validation and rate limiting -- i.e. everything README.md promises callers.
 // Each test builds its own host so the process-global rate limiter starts with a full window.
-public sealed class EndpointTests
+public sealed class EndpointTests : IDisposable
 {
+    private readonly List<string> _cachePaths = [];
+
     [Theory]
     [InlineData("/api/github/open-pull-requests", "application/json")]
     [InlineData("/api/github/open-pull-requests?format=json", "application/json")]
@@ -258,7 +261,33 @@ public sealed class EndpointTests
         var rejected = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+
+        // The limiter is shared by every caller, so a client retrying blind spends the permits
+        // of everyone else. Retry-After turns that storm into a single wait.
+        Assert.NotNull(rejected.Headers.RetryAfter);
     }
+
+    [Fact]
+    public async Task Refresh_has_its_own_far_tighter_budget_than_a_cached_read()
+    {
+        // ?refresh=true bypasses every cache tier and costs one listing request per 10 repos plus
+        // one per open PR. Sharing the cheap path's 10/min budget let an unauthenticated caller
+        // spend roughly ten times GitHub's hourly GraphQL allowance and 503 the service for
+        // everyone, so the expensive path gets its own partition.
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var firstRefresh = await client.GetAsync("/api/github/open-pull-requests?refresh=true", TestContext.Current.CancellationToken);
+        var secondRefresh = await client.GetAsync("/api/github/open-pull-requests?refresh=true", TestContext.Current.CancellationToken);
+        var cachedRead = await client.GetAsync("/api/github/open-pull-requests", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, firstRefresh.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, secondRefresh.StatusCode);
+
+        // Separate partitions: exhausting the refresh budget must not lock out cheap reads.
+        Assert.Equal(HttpStatusCode.OK, cachedRead.StatusCode);
+    }
+
 
     [Fact]
     public async Task Health_endpoints_are_not_rate_limited()
@@ -273,20 +302,23 @@ public sealed class EndpointTests
         }
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(
+    private WebApplicationFactory<Program> CreateFactory(
         FakeGitHubGraphQlClient? gitHub = null,
         string token = "test-token",
         string? cachePath = null,
-        string configuredOwner = "ivuorinen") =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        string configuredOwner = "ivuorinen")
+    {
+        var path = cachePath ?? Path.Combine(Path.GetTempPath(), $"ghpr-test-{Guid.NewGuid():N}.db");
+        _cachePaths.Add(path);
+
+        return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["GitHub:Owner"] = configuredOwner,
                     ["GitHub:Token"] = token,
-                    ["GitHub:CachePath"] = cachePath
-                        ?? Path.Combine(Path.GetTempPath(), $"ghpr-test-{Guid.NewGuid():N}.db"),
+                    ["GitHub:CachePath"] = path,
                 }));
             builder.ConfigureTestServices(services =>
             {
@@ -294,6 +326,25 @@ public sealed class EndpointTests
                 services.AddSingleton<IGitHubGraphQlClient>(gitHub ?? new FakeGitHubGraphQlClient());
             });
         });
+    }
+
+    public void Dispose()
+    {
+        // Every factory mints its own SQLite file and the app creates it on first use. Without
+        // this one run of this class leaves 22 of them behind in the temp directory, forever.
+        SqliteConnection.ClearAllPools();
+
+        foreach (var path in _cachePaths)
+        {
+            foreach (var file in new[] { path, path + "-wal", path + "-shm" })
+            {
+                if (File.Exists(file))
+                {
+                    File.Delete(file);
+                }
+            }
+        }
+    }
 
     private sealed record ProblemBody(string? Title);
 

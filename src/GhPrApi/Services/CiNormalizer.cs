@@ -55,22 +55,37 @@ public sealed class CiNormalizer
         var requiredChecks = SelectRequiredChecks(statusDetails).ToArray();
         if (requiredChecks.Length == 0)
         {
-            return statusDetails.RequiresStatusChecks
-                ? NormalizedValues.Ci.Pending
-                : NormalizedValues.Ci.Passing;
+            if (statusDetails.RequiresStatusChecks)
+            {
+                return NormalizedValues.Ci.Pending;
+            }
+
+            // No branch protection: nothing is required, so nothing blocks a merge. That is not
+            // the same as green. Reporting "passing" while failed checks sit in StatusChecks is
+            // a claim the Easy wins section acts on, and branch protection is off by default on
+            // new repositories -- exactly the long tail this service is most useful for. Judge
+            // whatever actually ran; only a repository with no checks at all is passing.
+            return statusDetails.StatusChecks.Count == 0
+                ? NormalizedValues.Ci.Passing
+                : Verdict(statusDetails.StatusChecks);
         }
 
-        if (requiredChecks.Any(IsFailing))
+        return Verdict(requiredChecks);
+    }
+
+    private static string Verdict(IReadOnlyList<GitHubStatusCheck> checks)
+    {
+        if (checks.Any(IsFailing))
         {
             return NormalizedValues.Ci.Failing;
         }
 
-        if (requiredChecks.Any(IsPending))
+        if (checks.Any(IsPending))
         {
             return NormalizedValues.Ci.Pending;
         }
 
-        return requiredChecks.All(IsSuccessful)
+        return checks.All(IsSuccessful)
             ? NormalizedValues.Ci.Passing
             : NormalizedValues.Ci.Pending;
     }

@@ -87,5 +87,28 @@ public sealed class MarkdownReportFormatterTests
         Assert.True(markdown.IndexOf("## Security updates", StringComparison.Ordinal) < markdown.IndexOf("## Human PRs", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Format_escapes_untrusted_github_content()
+    {
+        // PR titles on public repositories are attacker-controlled -- any outside contributor
+        // picks one -- and most Markdown renderers pass raw HTML through. The HTML formatter has
+        // had this guarantee since the start; this is the same one for the text format.
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = CreateBuilder(now);
+        var pullRequest = TestPullRequests.Create(
+            title: "<img src=x onerror=alert(1)> [bot]: https://evil.example",
+            createdAt: now);
+        var report = builder.Build("ivuorinen", [pullRequest]);
+        var formatter = new MarkdownReportFormatter();
+
+        var markdown = formatter.Format(report);
+
+        Assert.DoesNotContain("<img src=x onerror=alert(1)>", markdown, StringComparison.Ordinal);
+        Assert.Contains(@"\<img src=x onerror=alert(1)\>", markdown, StringComparison.Ordinal);
+
+        // The link-reference definition an attacker would need to weaponise "[bot]" cannot form.
+        Assert.DoesNotContain("[bot]: https://evil.example", markdown, StringComparison.Ordinal);
+    }
+
     private static PullRequestReportBuilder CreateBuilder(DateTimeOffset now) => TestSupport.CreateBuilder(now);
 }

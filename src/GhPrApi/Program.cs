@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using GhPrApi.Caching;
 using GhPrApi.GitHub;
 using GhPrApi.Models;
@@ -80,7 +82,7 @@ builder.Services.AddSingleton<IDistributedCache>(serviceProvider =>
 
 builder.Services.AddHybridCache();
 builder.Services.AddSingleton<GitHubApiHealthState>();
-builder.Services.AddScoped<IPullRequestReportService, PullRequestReportService>();
+builder.Services.AddScoped<PullRequestReportService>();
 
 builder.Services.AddHttpClient<IGitHubGraphQlClient, GitHubGraphQlClient>(client =>
 {
@@ -104,11 +106,40 @@ builder.Services.AddOpenApi();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.AddFixedWindowLimiter(RateLimiterPolicies.GitHubApi, limiterOptions =>
+
+    // The limiter is shared by all callers, so a client retrying blind spends everyone else's
+    // permits. FixedWindowRateLimiter already knows when the window reopens; pass it on so one
+    // wait replaces a retry storm.
+    options.OnRejected = (context, _) =>
     {
-        limiterOptions.PermitLimit = 10;
-        limiterOptions.Window = TimeSpan.FromMinutes(1);
-        limiterOptions.QueueLimit = 0;
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((int)retryAfter.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+        }
+
+        return ValueTask.CompletedTask;
+    };
+
+    // Two budgets, not one. A cached read is cheap; ?refresh=true bypasses every tier and costs
+    // one listing request per 10 repositories plus one per open pull request. Sharing a 10/min
+    // budget let an unauthenticated caller spend roughly ten times GitHub's hourly GraphQL
+    // allowance -- the operator's token, not this process, is the resource under protection.
+    options.AddPolicy(RateLimiterPolicies.GitHubApi, httpContext =>
+    {
+        // bool.TryParse, not a string compare: it is exactly what the endpoint's `bool? refresh`
+        // parameter binds with, so no spelling that reaches the expensive path can miss here.
+        var refresh = bool.TryParse(httpContext.Request.Query["refresh"], out var requested) && requested;
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            refresh ? "refresh" : "cached",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                // One refresh per minute still comfortably beats the 300s listing TTL.
+                PermitLimit = refresh ? 1 : 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            });
     });
 });
 
@@ -129,7 +160,7 @@ app.MapGet("/health/ready", GetReadiness)
 
 app.MapGet("/api/github/open-pull-requests", GetOpenPullRequestsAsync)
     .WithName("GetOpenPullRequests")
-    .WithSummary("Lists currently open pull requests across public, non-archived GitHub repositories owned by the configured account. Format via ?format=json|markdown|html, defaults to json.")
+    .WithSummary("Lists currently open pull requests across public, non-archived GitHub repositories owned by the configured account. Format via ?format=json|markdown|md|html, defaults to json.")
     .Produces<PullRequestReport>()
     .Produces<string>(StatusCodes.Status200OK, "text/markdown")
     .Produces<string>(StatusCodes.Status200OK, "text/html")
@@ -178,10 +209,11 @@ static async Task<IResult> GetOpenPullRequestsAsync(
     string? owner,
     bool? refresh,
     string? format,
-    IPullRequestReportService reports,
+    PullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
     IOptionsMonitor<GitHubOptions> gitHubOptions,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     var responseFormat = ParseFormat(format);
@@ -189,32 +221,34 @@ static async Task<IResult> GetOpenPullRequestsAsync(
     {
         return Results.Problem(
             title: "Unsupported format.",
-            detail: "Use format=json, format=markdown, or format=html.",
+            detail: "Use format=json, format=markdown, format=md, or format=html.",
             statusCode: StatusCodes.Status400BadRequest);
     }
 
-    return await RenderReportAsync(responseFormat.Value, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken).ConfigureAwait(false);
+    return await RenderReportAsync(responseFormat.Value, owner, refresh == true, reports, markdown, html, gitHubOptions, logger, cancellationToken).ConfigureAwait(false);
 }
 
 static Task<IResult> GetOpenPullRequestsJsonAsync(
     string? owner,
     bool? refresh,
-    IPullRequestReportService reports,
+    PullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
     IOptionsMonitor<GitHubOptions> gitHubOptions,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
-    RenderReportAsync(ResponseFormat.Json, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken);
+    RenderReportAsync(ResponseFormat.Json, owner, refresh == true, reports, markdown, html, gitHubOptions, logger, cancellationToken);
 
 static Task<IResult> GetOpenPullRequestsHtmlAsync(
     string? owner,
     bool? refresh,
-    IPullRequestReportService reports,
+    PullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
     IOptionsMonitor<GitHubOptions> gitHubOptions,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
-    RenderReportAsync(ResponseFormat.Html, owner, refresh == true, reports, markdown, html, gitHubOptions, cancellationToken);
+    RenderReportAsync(ResponseFormat.Html, owner, refresh == true, reports, markdown, html, gitHubOptions, logger, cancellationToken);
 
 static ResponseFormat? ParseFormat(string? format)
 {
@@ -236,10 +270,11 @@ static async Task<IResult> RenderReportAsync(
     ResponseFormat format,
     string? owner,
     bool refresh,
-    IPullRequestReportService reports,
+    PullRequestReportService reports,
     MarkdownReportFormatter markdown,
     HtmlReportFormatter html,
     IOptionsMonitor<GitHubOptions> gitHubOptions,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     // The upstream token belongs to the operator, and this endpoint is unauthenticated.
@@ -268,8 +303,14 @@ static async Task<IResult> RenderReportAsync(
             _ => Results.Ok(report),
         };
     }
-    catch (GitHubQueryException)
+    catch (GitHubQueryException ex)
     {
+        // Bound and logged: the response carries a fixed public string, so this is the only
+        // place the real cause reaches an operator. It matters most when GitHub was never
+        // called at all -- an unconfigured token throws here and would otherwise be reported,
+        // silently, as "unable to query GitHub".
+        logger.LogWarning(ex, "Report request failed: {Reason}", ex.Message);
+
         return format switch
         {
             ResponseFormat.Markdown => Results.Text("Unable to query GitHub.", "text/plain; charset=utf-8", statusCode: StatusCodes.Status503ServiceUnavailable),

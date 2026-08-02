@@ -79,6 +79,28 @@ public sealed class HtmlReportFormatterTests
     }
 
     [Fact]
+    public void Format_makes_each_scrolling_table_keyboard_reachable_and_named()
+    {
+        // The overflow container holds no focusable content past the PR link, so without
+        // tabindex a keyboard user cannot scroll to the CI and Branch columns (WCAG 2.2 SC
+        // 2.1.1). The label separates the several identical-looking tables on one page.
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = TestSupport.CreateBuilder(now);
+        var pullRequest = TestPullRequests.Create(
+            number: 2,
+            createdAt: now.AddDays(-5),
+            authorLogin: "renovate[bot]",
+            authorType: "Bot",
+            headRefName: "renovate/eslint-10.0.0");
+        var report = builder.Build("ivuorinen", [pullRequest]);
+
+        var html = new HtmlReportFormatter().Format(report);
+
+        Assert.Contains("<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"Easy wins\">", html, StringComparison.Ordinal);
+        Assert.Contains("<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"eslint\">", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Format_html_encodes_untrusted_github_content()
     {
         var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);

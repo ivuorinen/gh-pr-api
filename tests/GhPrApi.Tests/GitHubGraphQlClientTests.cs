@@ -201,6 +201,123 @@ public sealed class GitHubGraphQlClientTests
         Assert.True(healthState.IsHealthy);
     }
 
+    [Fact]
+    public async Task GetOpenPullRequestsAsync_throws_when_the_owner_does_not_exist()
+    {
+        // GitHub answers an unknown login with a null repositoryOwner, HTTP 200 and no errors
+        // array. Reporting that as an empty result made a misspelled GitHub:Owner permanently
+        // indistinguishable from "this account has no open PRs".
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse("""{ "data": { "repositoryOwner": null } }"""));
+        var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<GitHubQueryException>(
+            () => client.GetOpenPullRequestsAsync("ivuorinnen", CancellationToken.None));
+
+        Assert.Contains("ivuorinnen", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetOpenPullRequestsAsync_throws_before_calling_github_when_no_token_is_configured()
+    {
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse(SinglePageResponse));
+        var client = CreateClient(handler, token: "");
+
+        await Assert.ThrowsAsync<GitHubQueryException>(
+            () => client.GetOpenPullRequestsAsync("ivuorinen", CancellationToken.None));
+
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task GetPullRequestStatusDetailsAsync_maps_check_runs_and_status_contexts()
+    {
+        // CheckRun carries `name`, StatusContext carries `context`, and a node with neither is
+        // unusable. Nothing covered this mapping before.
+        const string response = """
+            {
+              "data": {
+                "repository": {
+                  "ref": { "branchProtectionRule": null },
+                  "pullRequest": {
+                    "statusCheckRollup": {
+                      "contexts": {
+                        "nodes": [
+                          { "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true },
+                          { "__typename": "StatusContext", "context": "legacy/ci", "state": "SUCCESS", "isRequired": false },
+                          { "__typename": "CheckRun", "name": "", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse(response));
+        var client = CreateClient(handler);
+
+        var details = await client.GetPullRequestStatusDetailsAsync(TestPullRequests.Create(), CancellationToken.None);
+
+        Assert.Equal(["build", "legacy/ci"], details.StatusChecks.Select(static check => check.DisplayName));
+        Assert.True(details.StatusChecks[0].IsRequired);
+        Assert.False(details.StatusChecks[1].IsRequired);
+    }
+
+    [Fact]
+    public async Task GetPullRequestStatusDetailsAsync_merges_both_required_check_sources()
+    {
+        // GitHub populates requiredStatusCheckContexts (strings) or requiredStatusChecks
+        // (objects) depending on how the rule was created, and casing between them is not
+        // guaranteed. Both feed one case-insensitive set.
+        const string response = """
+            {
+              "data": {
+                "repository": {
+                  "ref": {
+                    "branchProtectionRule": {
+                      "requiresStatusChecks": true,
+                      "requiredStatusCheckContexts": ["Build"],
+                      "requiredStatusChecks": [ { "context": "build" }, { "context": "test" } ]
+                    }
+                  },
+                  "pullRequest": { "statusCheckRollup": null }
+                }
+              }
+            }
+            """;
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse(response));
+        var client = CreateClient(handler);
+
+        var details = await client.GetPullRequestStatusDetailsAsync(TestPullRequests.Create(), CancellationToken.None);
+
+        Assert.True(details.RequiresStatusChecks);
+        Assert.Equal(2, details.RequiredStatusCheckNames.Count);
+        Assert.Contains("test", details.RequiredStatusCheckNames, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetPullRequestStatusDetailsAsync_handles_a_repository_with_no_branch_protection()
+    {
+        const string response = """
+            {
+              "data": {
+                "repository": {
+                  "ref": null,
+                  "pullRequest": { "statusCheckRollup": { "contexts": { "nodes": [] } } }
+                }
+              }
+            }
+            """;
+        var handler = new FakeHttpMessageHandler((_, _) => JsonResponse(response));
+        var client = CreateClient(handler);
+
+        var details = await client.GetPullRequestStatusDetailsAsync(TestPullRequests.Create(), CancellationToken.None);
+
+        Assert.False(details.RequiresStatusChecks);
+        Assert.Empty(details.RequiredStatusCheckNames);
+        Assert.Empty(details.StatusChecks);
+    }
+
     private static string RepositoryPageResponse(string repoName, bool hasNextPage, string? endCursor, bool prHasNextPage = false) => $$"""
         {
           "data": {
@@ -250,13 +367,14 @@ public sealed class GitHubGraphQlClientTests
         FakeHttpMessageHandler handler,
         GitHubApiHealthState? healthState = null,
         int repositoryLimit = 1000,
-        int pullRequestLimitPerRepository = 100)
+        int pullRequestLimitPerRepository = 100,
+        string? token = "test-token")
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.github.test/graphql") };
         var options = new FakeOptionsMonitor<GitHubOptions>(new GitHubOptions
         {
             Owner = "ivuorinen",
-            Token = "test-token",
+            Token = token,
             RepositoryLimit = repositoryLimit,
             PullRequestLimitPerRepository = pullRequestLimitPerRepository,
             StatusCheckLimitPerPullRequest = 100,

@@ -44,7 +44,7 @@ public sealed class MarkdownReportFormatter
                     }
 
                     firstDependencyGroup = false;
-                    builder.Append("### ").AppendLine(dependencyGroup.DependencyName);
+                    builder.Append("### ").AppendLine(Escape(dependencyGroup.DependencyName));
 
                     foreach (var pullRequest in dependencyGroup.PullRequests)
                     {
@@ -82,8 +82,12 @@ public sealed class MarkdownReportFormatter
         builder
             .Append(pullRequest.Id)
             .Append(": ")
-            .Append(pullRequest.Title)
+            .Append(Escape(pullRequest.Title))
             .Append(" — ")
+            // Not escaped: GitHub logins are alphanumerics and hyphens, plus the "[bot]" suffix
+            // GitHub itself appends. The only thing "[bot]" could become is a shortcut reference
+            // link, and that needs a "[bot]: url" definition, which the escaped title above can
+            // no longer smuggle in. Escaping it would backslash every robot PR for nothing.
             .Append(pullRequest.Author)
             .Append(" — open ")
             .Append(pullRequest.Age)
@@ -95,5 +99,34 @@ public sealed class MarkdownReportFormatter
             .Append(pullRequest.Branch)
             .Append(" — ")
             .AppendLine(pullRequest.Url);
+    }
+
+    /// <summary>
+    /// Neutralises GitHub-sourced text for Markdown output.
+    /// </summary>
+    /// <remarks>
+    /// PR titles on public repositories are attacker-controlled -- any outside contributor picks
+    /// one -- and most Markdown renderers pass raw HTML straight through, so an unescaped title
+    /// is an XSS vector in whatever consumes this. The HTML formatter already encodes; this is
+    /// the same guarantee for the other text format.
+    /// Only the characters that introduce markup or break the documented one-PR-per-bullet shape
+    /// are escaped. `*` and `_` are deliberately left alone: neither can smuggle HTML, intraword
+    /// `_` is not emphasis in CommonMark, and escaping them would mangle ordinary package names.
+    /// </remarks>
+    private static string Escape(string value)
+    {
+        var escaped = new StringBuilder(value.Length);
+
+        foreach (var character in value)
+        {
+            if (character is '<' or '>' or '[' or ']' or '`' or '\\')
+            {
+                escaped.Append('\\');
+            }
+
+            escaped.Append(character is '\r' or '\n' ? ' ' : character);
+        }
+
+        return escaped.ToString();
     }
 }
