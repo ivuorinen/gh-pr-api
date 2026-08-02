@@ -94,6 +94,13 @@ Calls to the GitHub GraphQL API automatically retry transient failures (5xx, tim
   "truncated": false,
   "groups": [
     {
+      "key": "easy-wins",
+      "title": "Easy wins",
+      "pullRequests": [
+        { "id": "ivuorinen/example#12", "…": "same item object as below" }
+      ]
+    },
+    {
       "key": "robots",
       "title": "Robots",
       "dependencyGroups": [
@@ -131,6 +138,10 @@ Calls to the GitHub GraphQL API automatically retry transient failures (5xx, tim
 }
 ```
 
+Groups appear in a fixed order: `easy-wins`, `security-updates`, `human-prs`, `robots`. A group with no members is omitted entirely.
+
+**`easy-wins` is an overlay, not a partition.** Every PR it lists is *also* listed in its normal group, so summing the sizes of all groups over-counts. `totalCount` is the authoritative number of distinct open PRs and counts each one exactly once.
+
 `truncated` is `true` if either `GitHub:RepositoryLimit` or `GitHub:PullRequestLimitPerRepository` cut off results before the true end of the data (i.e. the response may not list every currently open PR).
 
 If no open PRs exist, the JSON response is HTTP 200 with `totalCount: 0`, an empty `groups` array, and `message: "No open PRs."`.
@@ -159,10 +170,15 @@ The second tier is a SQLite file at `GitHub:CachePath`, so cached work survives 
 ### Markdown response
 
 ```markdown
+## Easy wins
+- [STALE] ivuorinen/example#12: chore(deps): update dotnet-sdk to v10 — renovate[bot] — open 5d — review: awaiting review — ci: passing — branch: up to date — https://github.com/ivuorinen/example/pull/12
+
 ## Robots
 ### dotnet-sdk
 - [STALE] ivuorinen/example#12: chore(deps): update dotnet-sdk to v10 — renovate[bot] — open 5d — review: awaiting review — ci: passing — branch: up to date — https://github.com/ivuorinen/example/pull/12
 ```
+
+`## Easy wins` is rendered first when non-empty. The repetition above is intentional — see [Easy wins](#easy-wins) below.
 
 If no open PRs exist, Markdown output is exactly:
 
@@ -179,6 +195,8 @@ Unable to query GitHub.
 ### HTML response
 
 `format=html` (or `GET /api/github/open-pull-requests.html`) renders the same grouped listing as a minimal, self-contained HTML page: an `<h1>` with the owner, an `<h2>`/`<h3>` per group and dependency group, and a `<table>` per group (Flags, PR, Author, Age, Review, CI, Branch) with one `<tr>` per PR, its title linking to the GitHub URL. All GitHub-sourced text (titles, authors) is HTML-encoded.
+
+`<h2>Easy wins</h2>` and its table come first when non-empty.
 
 If GitHub cannot be queried, HTML output is an HTML page with the same `Unable to query GitHub.` message, at HTTP 503.
 
@@ -223,6 +241,19 @@ Branch:
 - unclear -> `unknown`
 
 Security detection checks title, labels, branch name, author metadata and dependency metadata for vulnerability/security/CVE/GHSA/advisory-related indicators.
+
+## Easy wins
+
+The first section of every output format lists the PRs that can be merged right now, **oldest first**. A PR qualifies when all four hold:
+
+| Condition | Note |
+|---|---|
+| `ci` is `passing` | `unknown` does **not** qualify. A failed status lookup is an absence of information, never a green light. `pending` does not qualify either. |
+| not a draft | |
+| `branch` is not `conflict` | `behind` **does** qualify — GitHub merges a behind-but-clean branch. `unknown` also qualifies; it only means mergeability was not computed yet. |
+| `review` is not `changes requested` | Approval is **not** required. Requiring it would permanently empty the section, since bot PRs are never reviewed. |
+
+The section is an overlay: each PR it lists also stays in its normal Security / Human / Robots group, and `totalCount` still counts it once. Ordering is by `createdAt` ascending, tie-broken by PR id, so it is stable across requests.
 
 ## Test
 

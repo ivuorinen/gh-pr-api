@@ -38,6 +38,8 @@ public static class NormalizedValues
 
     public static class Group
     {
+        public const string EasyWinsKey = "easy-wins";
+        public const string EasyWinsTitle = "Easy wins";
         public const string SecurityUpdatesKey = "security-updates";
         public const string SecurityUpdatesTitle = "Security updates";
         public const string HumanPullRequestsKey = "human-prs";

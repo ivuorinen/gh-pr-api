@@ -99,6 +99,7 @@ public sealed class PullRequestReportBuilderTests
         Assert.Equal(3, report.TotalCount);
         Assert.Collection(
             report.Groups,
+            easyWins => Assert.Equal(NormalizedValues.Group.EasyWinsKey, easyWins.Key),
             security => Assert.Equal(NormalizedValues.Group.SecurityUpdatesKey, security.Key),
             human => Assert.Equal(NormalizedValues.Group.HumanPullRequestsKey, human.Key),
             robots => Assert.Equal(NormalizedValues.Group.RobotsKey, robots.Key));
@@ -146,11 +147,80 @@ public sealed class PullRequestReportBuilderTests
             headRefName: "renovate/eslint-10.0.0");
 
         var report = builder.Build("ivuorinen", [first, second]);
-        var robots = Assert.Single(report.Groups);
+        var robots = Assert.Single(report.Groups, static group => group.Key == NormalizedValues.Group.RobotsKey);
         var dependencyGroup = Assert.Single(robots.DependencyGroups!);
 
         Assert.Equal("eslint", dependencyGroup.DependencyName);
         Assert.Equal(2, dependencyGroup.PullRequests.Count);
+    }
+
+    [Fact]
+    public void Easy_wins_is_the_first_group_and_lists_oldest_first()
+    {
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = CreateBuilder(now);
+        var pullRequests = new[]
+        {
+            TestPullRequests.Create(number: 1, createdAt: now.AddDays(-1)),
+            TestPullRequests.Create(number: 5, createdAt: now.AddDays(-5)),
+            TestPullRequests.Create(number: 3, createdAt: now.AddDays(-3)),
+        };
+
+        var report = builder.Build("ivuorinen", pullRequests);
+
+        Assert.Equal(NormalizedValues.Group.EasyWinsKey, report.Groups[0].Key);
+        Assert.Equal(NormalizedValues.Group.EasyWinsTitle, report.Groups[0].Title);
+        Assert.Equal([5, 3, 1], report.Groups[0].PullRequests!.Select(static item => item.Number));
+    }
+
+    [Fact]
+    public void Easy_wins_excludes_pull_requests_that_are_not_ready()
+    {
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = CreateBuilder(now);
+        var failingChecks = new GitHubPullRequestStatusDetails(
+            [new GitHubStatusCheck("CheckRun", "build", "COMPLETED", "FAILURE", State: null, IsRequired: true)],
+            ["build"],
+            RequiresStatusChecks: true);
+        var pendingChecks = new GitHubPullRequestStatusDetails(
+            [new GitHubStatusCheck("CheckRun", "build", "IN_PROGRESS", Conclusion: null, State: null, IsRequired: true)],
+            ["build"],
+            RequiresStatusChecks: true);
+        var pullRequests = new[]
+        {
+            TestPullRequests.Create(number: 1, statusDetails: failingChecks),
+            TestPullRequests.Create(number: 2) with { StatusUnresolved = true },
+            TestPullRequests.Create(number: 3, statusDetails: pendingChecks),
+            TestPullRequests.Create(number: 4, isDraft: true),
+            TestPullRequests.Create(number: 5, mergeStateStatus: "DIRTY", mergeable: "CONFLICTING"),
+            TestPullRequests.Create(number: 6, reviewDecision: "CHANGES_REQUESTED"),
+        };
+
+        var report = builder.Build("ivuorinen", pullRequests);
+
+        Assert.Equal(6, report.TotalCount);
+        Assert.DoesNotContain(report.Groups, static group => group.Key == NormalizedValues.Group.EasyWinsKey);
+    }
+
+    [Fact]
+    public void Easy_wins_does_not_remove_the_pull_request_from_its_normal_group()
+    {
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var builder = CreateBuilder(now);
+        var pullRequest = TestPullRequests.Create(
+            number: 7,
+            authorLogin: "renovate[bot]",
+            authorType: "Bot",
+            headRefName: "renovate/eslint-10.0.0");
+
+        var report = builder.Build("ivuorinen", [pullRequest]);
+
+        var easyWins = Assert.Single(report.Groups, static group => group.Key == NormalizedValues.Group.EasyWinsKey);
+        var robots = Assert.Single(report.Groups, static group => group.Key == NormalizedValues.Group.RobotsKey);
+
+        Assert.Equal(7, Assert.Single(easyWins.PullRequests!).Number);
+        Assert.Equal(7, Assert.Single(Assert.Single(robots.DependencyGroups!).PullRequests).Number);
+        Assert.Equal(1, report.TotalCount);
     }
 
     [Fact]

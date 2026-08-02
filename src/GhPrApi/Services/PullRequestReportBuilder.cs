@@ -60,6 +60,24 @@ public sealed class PullRequestReportBuilder
 
         var groups = new List<PullRequestGroup>();
 
+        // An overlay, not a partition: these pull requests are listed again in their normal
+        // group below, and TotalCount still counts each one once. GetSortRank is deliberately
+        // not applied -- by construction nothing here is failing, so ranking would only push
+        // stale ahead of fresh and break the oldest-first contract this section exists for.
+        var easyWins = items
+            .Where(IsEasyWin)
+            .OrderBy(static item => item.CreatedAt)
+            .ThenBy(static item => item.Id, StringComparer.Ordinal)
+            .ToArray();
+
+        if (easyWins.Length > 0)
+        {
+            groups.Add(new PullRequestGroup(
+                NormalizedValues.Group.EasyWinsKey,
+                NormalizedValues.Group.EasyWinsTitle,
+                PullRequests: easyWins));
+        }
+
         var securityPullRequests = items
             .Where(static item => item.IsSecurity)
             .OrderBy(GetSortRank)
@@ -183,6 +201,16 @@ public sealed class PullRequestReportBuilder
 
         return prefixes;
     }
+
+    // Tested against Passing rather than "not Failing" on purpose: an unresolved status lookup
+    // reports Unknown, and an absence of information must never be promoted to a green light.
+    // Branch "behind" and "unknown" both qualify -- GitHub merges a behind-but-clean branch, and
+    // "unknown" only means mergeability was not computed yet. Conflict is the sole blocker.
+    private static bool IsEasyWin(PullRequestItem item) =>
+        !item.IsDraft
+        && item.Ci.Equals(NormalizedValues.Ci.Passing, StringComparison.OrdinalIgnoreCase)
+        && !item.Branch.Equals(NormalizedValues.Branch.Conflict, StringComparison.OrdinalIgnoreCase)
+        && !item.Review.Equals(NormalizedValues.Review.ChangesRequested, StringComparison.OrdinalIgnoreCase);
 
     private static int GetSortRank(PullRequestItem item)
     {

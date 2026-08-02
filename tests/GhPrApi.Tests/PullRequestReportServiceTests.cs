@@ -135,7 +135,12 @@ public sealed class PullRequestReportServiceTests
 
         var report = await service.GetOpenPullRequestsAsync(null, refresh: false, CancellationToken.None);
 
-        var items = report.Groups.SelectMany(static g => g.PullRequests ?? []).ToDictionary(static i => i.Number);
+        // DistinctBy because the "Easy wins" group is an overlay: a ready-to-merge PR is listed
+        // both there and in its normal group, so flattening Groups yields it twice.
+        var items = report.Groups
+            .SelectMany(static g => g.PullRequests ?? [])
+            .DistinctBy(static i => i.Number)
+            .ToDictionary(static i => i.Number);
         Assert.True(report.Degraded);
         Assert.Equal(["ivuorinen/example#2"], report.Unresolved);
         Assert.Equal(NormalizedValues.Ci.Unknown, items[2].Ci);
