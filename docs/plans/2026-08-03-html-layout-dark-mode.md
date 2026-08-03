@@ -1,7 +1,7 @@
 # Plan: HTML report — column reorder, fixed column widths, dark mode
 
 Date: 2026-08-03
-Status: DRAFT — awaiting approval to implement
+Status: IMPLEMENTED — approved 2026-08-03, delivered in c53c0e1 (see #17 for the review follow-ups)
 
 ## Goal
 
