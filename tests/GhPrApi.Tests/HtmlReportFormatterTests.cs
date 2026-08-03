@@ -1,3 +1,4 @@
+using System.Net;
 using GhPrApi.GitHub;
 using GhPrApi.Models;
 using GhPrApi.Services;
@@ -113,7 +114,7 @@ public sealed class HtmlReportFormatterTests
 
         Assert.Contains(
             "<tr><td>ivuorinen/example#1: <a href=\"https://github.com/ivuorinen/example/pull/1\">Add feature</a></td>"
-            + $"<td class=\"prefixes\">{expectedFlags}</td>",
+            + $"<td class=\"prefixes\">{WebUtility.HtmlEncode(expectedFlags)}</td>",
             html,
             StringComparison.Ordinal);
     }
@@ -206,8 +207,11 @@ public sealed class HtmlReportFormatterTests
 
         foreach (var label in expectedLabels)
         {
+            // Encoded to match the formatter. A dependency name is derived from a head ref via
+            // an unrestricted capture, so it can legitimately contain & < or " -- comparing
+            // against the raw value would fail on correct markup.
             Assert.Contains(
-                $"<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"{label}\">",
+                $"<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"{WebUtility.HtmlEncode(label)}\">",
                 html,
                 StringComparison.Ordinal);
         }
@@ -216,6 +220,37 @@ public sealed class HtmlReportFormatterTests
         Assert.Equal(
             expectedLabels.Length,
             html.Split("<div class=\"table-wrap\"", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void Format_html_encodes_the_region_label()
+    {
+        // A dependency name comes from the head ref through an unrestricted capture
+        // (^dependabot/[^/]+/(?<dependency>.+)$), so a fork PR can put markup characters into a
+        // group label. The label reaches an attribute value, which nothing covered before.
+        var now = new DateTimeOffset(2026, 7, 6, 12, 0, 0, TimeSpan.Zero);
+        var pullRequest = TestPullRequests.Create(
+            number: 1,
+            createdAt: now,
+            authorLogin: "dependabot[bot]",
+            authorType: "Bot",
+            headRefName: "dependabot/npm_and_yarn/\"><script>");
+        var report = TestSupport.CreateBuilder(now).Build("ivuorinen", [pullRequest]);
+
+        var html = new HtmlReportFormatter().Format(report);
+
+        var dependencyName = report.Groups
+            .SelectMany(static group => group.DependencyGroups ?? [])
+            .Select(static dependencyGroup => dependencyGroup.DependencyName)
+            .Single();
+
+        // Guards the premise: if detection stops producing a name needing encoding, this test
+        // would otherwise keep passing while covering nothing.
+        Assert.Contains("<", dependencyName, StringComparison.Ordinal);
+
+        Assert.DoesNotContain($"aria-label=\"{dependencyName}\"", html, StringComparison.Ordinal);
+        Assert.Contains($"aria-label=\"{WebUtility.HtmlEncode(dependencyName)}\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("<script>", html, StringComparison.Ordinal);
     }
 
     [Fact]
