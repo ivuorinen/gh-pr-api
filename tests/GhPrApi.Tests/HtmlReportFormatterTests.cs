@@ -103,10 +103,17 @@ public sealed class HtmlReportFormatterTests
             html,
             StringComparison.Ordinal);
 
-        // The PR cell, then the flags cell carrying STALE for a four-day-old PR.
+        // Expected flags are read off the built report rather than written in literally. This
+        // test's subject is which cell the value lands in, so hard-coding "STALE" would make a
+        // change to the stale threshold fail a column-order test -- a failure pointing at the
+        // wrong cause. Derived this way it still proves the value reached the prefixes cell, and
+        // it keeps proving it if the flag rules change.
+        var item = report.Groups.SelectMany(static g => g.PullRequests ?? []).First(static i => i.Number == 1);
+        var expectedFlags = string.Join(' ', item.Prefixes);
+
         Assert.Contains(
             "<tr><td>ivuorinen/example#1: <a href=\"https://github.com/ivuorinen/example/pull/1\">Add feature</a></td>"
-            + "<td class=\"prefixes\">STALE</td>",
+            + $"<td class=\"prefixes\">{expectedFlags}</td>",
             html,
             StringComparison.Ordinal);
     }
@@ -182,8 +189,33 @@ public sealed class HtmlReportFormatterTests
 
         var html = new HtmlReportFormatter().Format(report);
 
-        Assert.Contains("<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"Easy wins\">", html, StringComparison.Ordinal);
-        Assert.Contains("<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"eslint\">", html, StringComparison.Ordinal);
+        // Labels are read off the report, not written in literally: "Easy wins" appears here
+        // only because this PR happens to satisfy the easy-wins rule, so hard-coding it would
+        // make a change to that rule fail an accessibility test. Walking the groups also makes
+        // the assertion stronger -- every rendered table must have a labelled region, not just
+        // the two this fixture happens to produce.
+        var expectedLabels = report.Groups
+            .SelectMany(static group => group.PullRequests is { Count: > 0 }
+                ? [group.Title]
+                : (group.DependencyGroups ?? [])
+                    .Where(static dependencyGroup => dependencyGroup.PullRequests.Count > 0)
+                    .Select(static dependencyGroup => dependencyGroup.DependencyName))
+            .ToArray();
+
+        Assert.NotEmpty(expectedLabels);
+
+        foreach (var label in expectedLabels)
+        {
+            Assert.Contains(
+                $"<div class=\"table-wrap\" tabindex=\"0\" role=\"region\" aria-label=\"{label}\">",
+                html,
+                StringComparison.Ordinal);
+        }
+
+        // One labelled region per rendered table, so a table can never slip out unlabelled.
+        Assert.Equal(
+            expectedLabels.Length,
+            html.Split("<div class=\"table-wrap\"", StringSplitOptions.None).Length - 1);
     }
 
     [Fact]
