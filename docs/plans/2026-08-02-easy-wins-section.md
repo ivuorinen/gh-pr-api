@@ -1,7 +1,7 @@
 # Plan: "Easy wins" section
 
 Date: 2026-08-02
-Status: DRAFT — awaiting approval to implement
+Status: IMPLEMENTED — approved 2026-08-02, delivered in f7ebc4d, merged to main in #16
 
 ## Goal
 
