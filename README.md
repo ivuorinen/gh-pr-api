@@ -211,7 +211,11 @@ Unable to query GitHub.
 
 ### HTML response
 
-`format=html` (or `GET /api/github/open-pull-requests.html`) renders the same grouped listing as a minimal, self-contained HTML page: an `<h1>` with the owner, an `<h2>`/`<h3>` per group and dependency group, and a `<table>` per group (Flags, PR, Author, Age, Review, CI, Branch) with one `<tr>` per PR, its title linking to the GitHub URL. All GitHub-sourced text (titles, authors) is HTML-encoded.
+`format=html` (or `GET /api/github/open-pull-requests.html`) renders the same grouped listing as a minimal, self-contained HTML page: an `<h1>` with the owner, an `<h2>`/`<h3>` per group and dependency group, and a `<table>` per group (PR, Flags, Author, Age, Review, CI, Branch) with one `<tr>` per PR, its title linking to the GitHub URL. All GitHub-sourced text (titles, authors) is HTML-encoded.
+
+Every column except `PR` has a fixed width and the tables use `table-layout: fixed`, so the several tables on one page line up with each other rather than each sizing its columns from its own contents. `PR` takes the remaining width.
+
+The page follows the browser's light/dark preference via `prefers-color-scheme` — there is no in-page toggle. Both palettes meet WCAG 2.2 AA: every text colour is at least 4.5:1 against its background (SC 1.4.3) and the focus indicator at least 3:1 (SC 1.4.11). Link colours are set explicitly in both themes rather than left to the browser default, which would sit at 1.96:1 on the dark background.
 
 Each table sits in a horizontally scrollable region carrying `tabindex="0"`, `role="region"` and an `aria-label` naming its group, so the columns past the PR link stay reachable by keyboard on a narrow viewport (WCAG 2.2 SC 2.1.1).
 
