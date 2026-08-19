@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
     <!-- Microsoft.Data.Sqlite 10.0.10 transitively pulls the SQLitePCLRaw 2.1.11 family, whose
          bundled SQLite is covered by GHSA-2m69-gcr7-jv3q (high). Pin the current 3.x family
