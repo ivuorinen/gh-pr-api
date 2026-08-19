@@ -32,7 +32,7 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="10.8.0" />
-    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
     <!-- Microsoft.AspNetCore.OpenApi declares only Microsoft.OpenApi >= 2.0.0, and NuGet
          resolves the lowest match, which is the version vulnerable to GHSA-v5pm-xwqc-g5wc
          (stack overflow on circular schema refs). Keep an explicit reference to force a fixed
