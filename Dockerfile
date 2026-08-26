@@ -12,7 +12,7 @@ RUN dotnet restore src/GhPrApi/GhPrApi.csproj --locked-mode
 COPY src/GhPrApi src/GhPrApi
 RUN dotnet publish src/GhPrApi/GhPrApi.csproj -c Release -o /app/publish /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS runtime
 WORKDIR /app
 
 # The aspnet runtime image ships no HTTP client (no curl/wget/nc), so HEALTHCHECK needs one.
